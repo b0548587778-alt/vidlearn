@@ -62,10 +62,11 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          # הורדת Gradle נקטעת לפעמים אחרי 10 שניות (ברירת המחדל) — זמן ארוך יותר וניסיון חוזר
+          # הורדת Gradle נקטעת לפעמים (פסק זמן של 10 שניות, או 504 מהשרת) — זמן ארוך יותר וניסיונות חוזרים
           # להורדה בלבד; הבנייה עצמה רצה פעם אחת
           sed -i 's/^networkTimeout=.*/networkTimeout=120000/' gradle/wrapper/gradle-wrapper.properties
-          for i in 1 2 3; do ./gradlew --version --no-daemon >/dev/null && break; echo "Gradle download failed (attempt $i), retrying"; sleep 10; done
+          # עד 6 ניסיונות לאורך כ-7 דקות (שרת ההורדות החזיר 504 כמה דקות ברצף)
+          for i in 1 2 3 4 5 6; do ./gradlew --version --no-daemon >/dev/null && break; echo "Gradle download failed (attempt $i), retrying in $((i * 20))s"; sleep $((i * 20)); done
           ./gradlew assembleDebug --no-daemon $SIGNING_ARGS
 
       # ה-APK חייב להיות חתום במפתח הקבוע — אחרת הוא לא יתקין עדכון, ועדיף שהבנייה תיכשל
