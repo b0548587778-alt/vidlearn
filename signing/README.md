@@ -1,7 +1,7 @@
 # מפתח החתימה
 
 כל APK נחתם במפתח קבוע ששמור ב-GitHub Secrets בשם `SIGNING_KEYSTORE_B64` (הקובץ בקידוד base64).
-ב-CI הוא מפוענח ל-`~/.android/debug.keystore` (כינוי `androiddebugkey`, סיסמה `android`).
+ב-CI הוא מפוענח לקובץ זמני ומועבר ל-Gradle במפורש (`android.injected.signing.*`; כינוי `androiddebugkey`, סיסמה `android`). שלב "Verify signature" מכשיל את הבנייה אם ה-APK לא חתום בו.
 
 **אין להחליף או למחוק אותו:** APK שנחתם במפתח אחר לא יותקן כעדכון, והסרת האפליקציה מוחקת את הנתונים בטלפון.
 בלי הסוד — הבנייה עוברת, אבל עם אזהרה: המפתח חד-פעמי.
