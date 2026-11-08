@@ -2,7 +2,7 @@
   "name": "vidlearn-native",
   "version": "1.0.0",
   "private": true,
-  "description": "VidLearn: יכולות אנדרואיד — ניגון ברקע (שירות קדמה) וסריקת קבצים ששמרנו בתיקיית ההורדות",
+  "description": "VidLearn: יכולות אנדרואיד — ניגון ברקע (שירות קדמה) סריקת קבצים ששמרנו בתיקיית ההורדות, וכניסה עם Google",
   "main": "index.js",
   "license": "UNLICENSED",
   "files": ["android/src/main/", "android/build.gradle", "index.js"],

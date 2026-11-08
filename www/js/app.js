@@ -9,6 +9,7 @@ import { parseWordList } from './filter.js';
 import { t as makeT, SUBJECTS } from './i18n.js';
 import { formatDuration, truncate, safeUrl } from './util.js';
 import { VERSION } from './version.js';
+import { createGoogle, signInErrorKey } from './google.js';
 
 const store = createStore(window.localStorage, { onSaveError: () => toast(tr('saveFailed')) });
 let tr = makeT(store.state.settings.lang);
@@ -55,6 +56,20 @@ const cap = window.Capacitor;
 const FS = cap?.isNativePlatform?.() ? cap?.Plugins?.Filesystem : null;
 const NET = cap?.isNativePlatform?.() ? cap?.Plugins?.Network : null;
 const NATIVE = cap?.isNativePlatform?.() ? cap?.Plugins?.VidLearnNative : null; // native/vidlearn-native
+
+// ---------- חשבון Google: יוטיוב בלי מפתח + סנכרון בין מכשירים (google.js) ----------
+const google = createGoogle({
+  native: NATIVE ? { signIn: (o) => NATIVE.googleSignIn(o), clearToken: (o) => NATIVE.googleClearToken(o) } : null,
+  store,
+  storage: window.localStorage,
+  // נתונים ממכשיר אחר — מרעננים רק מסכי רשימות (לא נגן / קורא באמצע)
+  onApplied: () => {
+    const name = (location.hash.replace(/^#\/?/, '') || 'home').split(/[/?]/)[0];
+    if (['home', 'library', 'course'].includes(name)) route();
+  },
+});
+const ready = (s) => sourceReady(s, { google: google.signedIn });
+const ytAuth = () => (google.signedIn ? (o) => google.getToken(o) : null);
 const PUBLIC_DIR = 'Download/VidLearn';
 const fsAdapter = FS ? {
   async download(url, path, onProgress) {
@@ -329,8 +344,9 @@ function wikiCard(q) {
 // יוטיוב כבוי — שם רוב סרטוני הלימוד בעברית. הסבר קצר ומעבר להגדרות
 function youtubeHint() {
   const yt = store.state.settings.sources.find((s) => s.type === 'youtube');
-  if (!yt || sourceReady(yt)) return null;
+  if (!yt || ready(yt)) return null;
   return h('div', { class: 'notice small' }, tr('youtubeOffHint'), ' ',
+    google.available ? h('a', { class: 'btn btn-sm btn-primary', href: '#/settings?focus=google' }, tr('googleSignIn')) : null, ' ',
     h('a', { class: 'btn btn-sm', href: '#/settings?focus=youtube' }, tr('youtubeHowTo')));
 }
 
@@ -347,7 +363,7 @@ function renderSearch(params) {
     wrap.append(h('p', { class: 'muted center' }, tr('tagline')));
     return wrap;
   }
-  if (!store.state.settings.sources.some(sourceReady)) {
+  if (!store.state.settings.sources.some(ready)) {
     wrap.append(h('div', { class: 'notice warn' }, tr('noSourcesActive')));
     return wrap;
   }
@@ -396,7 +412,7 @@ function renderSearch(params) {
     if (!st.loading) {
       st.loading = (async () => {
         try {
-          const r = await searchAll(q, store.state.settings, { cursors: st.cursors, alt: st.alt });
+          const r = await searchAll(q, store.state.settings, { cursors: st.cursors, alt: st.alt, youtubeAuth: ytAuth() });
           const ids = new Set(st.items.map((v) => v.id));
           st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
           st.cursors = { ...st.cursors, ...r.cursors };
@@ -423,14 +439,14 @@ function renderSearch(params) {
     lastSearch = token;
     // קודם התוצאות בשפת החיפוש; המונח באנגלית (ויקיפדיה + עוד חיפוש) נוסף כשהוא מגיע — לא מעכב
     const altP = altFor(q);
-    searchAll(q, store.state.settings).then((r) => {
+    searchAll(q, store.state.settings, { youtubeAuth: ytAuth() }).then((r) => {
       if (lastSearch !== token) return; // חיפוש חדש החליף אותו
       const st = { q, ...r, alt: null, items: r.items.map(remember), redraw: draw };
       lastSearch = st;
       draw();
       altP.then(async (alt) => {
         if (!alt || lastSearch !== st) return;
-        const a = await searchAll(q, store.state.settings, { alt, altOnly: true });
+        const a = await searchAll(q, store.state.settings, { alt, altOnly: true, youtubeAuth: ytAuth() });
         if (lastSearch !== st) return;
         const ids = new Set(st.items.map((v) => v.id));
         st.items.push(...a.items.filter((v) => !ids.has(v.id)).map(remember));
@@ -1145,6 +1161,83 @@ function renderRead(id) {
   return [mediaHead(book), mediaActions(book), body];
 }
 
+// חשבון Google בהגדרות: כניסה / יציאה, מצב הסנכרון, והוראות ההגדרה החד-פעמית
+function googlePanel() {
+  const panel = h('div', { class: 'panel', id: 'src-google' });
+  let busy = false;
+  let lastError = '';
+  const when = (t) => new Date(t).toLocaleString(store.state.settings.lang === 'en' ? 'en-GB' : 'he-IL', { dateStyle: 'short', timeStyle: 'short' });
+
+  const signature = h('div', { class: 'muted small', dir: 'ltr' });
+  const copyBtn = h('button', { class: 'btn btn-sm', type: 'button', hidden: true }, tr('copy'));
+  if (NATIVE?.appSignature) {
+    NATIVE.appSignature().then(({ packageName, sha1 }) => {
+      const text = `${packageName}\n${sha1}`;
+      fill(signature, h('code', {}, packageName), h('br'), h('code', {}, sha1));
+      copyBtn.hidden = false;
+      copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(text); toast(tr('copied')); } catch { /* */ } };
+    }).catch(() => {});
+  } else {
+    fill(signature, h('code', {}, 'com.vidlearn.app'));
+  }
+  const setup = h('details', { class: 'howto' },
+    h('summary', {}, tr('googleSetupTitle')),
+    h('ol', {}, tr('googleSetupSteps').map((step) => h('li', {}, step))),
+    h('div', { class: 'muted small' }, tr('googleAppId')), signature, copyBtn,
+    h('div', { class: 'row', style: 'margin-top:8px' },
+      h('a', { class: 'btn btn-sm', href: 'https://console.cloud.google.com/auth/clients', target: '_blank', rel: 'noopener noreferrer' }, '↗ Google Cloud Console')));
+
+  const signIn = async () => {
+    busy = true; lastError = ''; draw();
+    try {
+      await google.signIn();
+      lastSearch = null;
+      toast(tr('googleWelcome'));
+    } catch (e) {
+      lastError = signInErrorKey(e);
+      if (lastError === 'googleNotConfigured' || lastError === 'googleFailed') setup.open = true;
+    } finally {
+      busy = false; draw();
+    }
+  };
+  const signOut = async () => { await google.signOut(); lastSearch = null; toast(tr('googleSignedOut')); draw(); };
+
+  function draw() {
+    const st = google.status;
+    const a = google.account;
+    let body;
+    if (!google.available) {
+      body = [h('div', { class: 'notice small' }, tr('googleOnlyInApp'))];
+    } else if (!a) {
+      body = [h('button', { class: 'btn btn-primary', type: 'button', disabled: busy, onclick: signIn }, busy ? '…' : tr('googleSignIn'))];
+    } else {
+      const needsConsent = /needs-consent/.test(st.error);
+      body = [
+        h('div', { class: 'row' },
+          a.picture ? h('img', { src: a.picture, alt: '', width: 36, height: 36, style: 'border-radius:50%', referrerpolicy: 'no-referrer' }) : null,
+          h('div', {}, h('b', {}, a.name || a.email), h('div', { class: 'muted small', dir: 'ltr' }, a.email))),
+        h('div', { class: 'muted small', style: 'margin-top:6px' },
+          st.syncing ? tr('googleSyncing') : st.lastSync ? tr('googleSynced', when(st.lastSync)) : tr('googleNeverSynced')),
+        st.error && !st.syncing ? h('div', { class: 'notice warn small' }, needsConsent ? tr('googleNeedsConsent') : tr('googleSyncError')) : null,
+        h('div', { class: 'row', style: 'margin-top:8px' },
+          needsConsent ? h('button', { class: 'btn btn-primary btn-sm', type: 'button', disabled: busy, onclick: signIn }, tr('googleSignIn')) : null,
+          h('button', { class: 'btn btn-sm', type: 'button', disabled: st.syncing, onclick: () => google.sync() }, '⟳ ' + tr('googleSyncNow')),
+          h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: signOut }, tr('googleSignOut'))),
+      ];
+    }
+    fill(panel, h('h2', { style: 'margin-top:0' }, tr('googleAccount')),
+      h('p', { class: 'muted small' }, tr('googleIntro')),
+      body,
+      lastError ? h('div', { class: 'notice warn small' }, tr(lastError)) : null,
+      google.available && !a ? setup : null);
+  }
+  draw();
+  const off = google.onChange(() => { if (panel.isConnected) draw(); });
+  const prev = cleanupView;
+  cleanupView = () => { off(); if (prev) prev(); };
+  return panel;
+}
+
 function renderSettings(params = new URLSearchParams()) {
   const s = store.state.settings;
   const focus = params.get('focus') || '';
@@ -1161,8 +1254,9 @@ function renderSettings(params = new URLSearchParams()) {
     if (keyInput) keyInput.addEventListener('change', () => { store.updateSource(src.id, { key: keyInput.value, enabled: !!keyInput.value.trim() || toggle.checked }); lastSearch = null; route(); });
     return h('div', { class: 'source', id: `src-${src.id}` }, toggle,
       h('div', { class: 'info' }, h('b', {}, src.name), h('div', { class: 'muted small' }, type.label[s.lang] || type.label.he, src.url && !src.builtin ? ` · ${src.url}` : ''),
+        src.type === 'youtube' && google.signedIn && !String(src.key || '').trim() ? h('div', { class: 'muted small' }, '✓ ' + tr('youtubeViaGoogle')) : null,
         keyInput ? [keyInput, h('div', { class: 'muted small' }, tr('apiKeyHint')),
-          src.type === 'youtube' ? h('details', { class: 'howto', open: focus === 'youtube' && !sourceReady(src) },
+          src.type === 'youtube' ? h('details', { class: 'howto', open: focus === 'youtube' && !ready(src) },
             h('summary', {}, tr('youtubeHowTo')),
             h('ol', {}, tr('youtubeSteps').map((step) => h('li', {}, step))),
             h('a', { class: 'btn btn-sm', href: 'https://console.cloud.google.com/apis/library/youtube.googleapis.com', target: '_blank', rel: 'noopener noreferrer' }, '↗ Google Cloud Console')) : null] : null),
@@ -1232,9 +1326,11 @@ function renderSettings(params = new URLSearchParams()) {
     try { store.importJson(backupText.value); applyLang(); toast(tr('imported')); route(); } catch { toast(tr('badFile')); }
   };
 
+  const account = googlePanel();
   return [
     h('h1', {}, tr('settings')),
     h('p', { class: 'muted small' }, `${tr('version')}: ${VERSION}`),
+    account,
     h('div', { class: 'panel' }, h('label', { class: 'field', for: 'langSel' }, tr('language'), langSel)),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('sources')), h('p', { class: 'muted small' }, tr('sourcesHint')), sourcesBox,
       h('h2', {}, tr('addSource')),
@@ -1369,3 +1465,10 @@ if (capApp) {
 applyLang();
 route();
 downloads.pump(); // הורדות שנקטעו בפעם הקודמת ממשיכות
+
+// סנכרון עם חשבון Google: בפתיחה, וכשחוזרים לאפליקציה
+if (google.signedIn) google.sync();
+capApp?.addListener('appStateChange', ({ isActive }) => {
+  if (isActive && google.signedIn) google.syncSoon(1000);
+  else if (!isActive && google.signedIn) google.sync(); // יוצאים — מה שהשתנה עולה עכשיו
+});

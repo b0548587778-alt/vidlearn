@@ -1,6 +1,7 @@
 // מצב האפליקציה — הכול בטלפון (localStorage), בלי שרת.
 import { DEFAULT_SOURCES, SOURCE_TYPES } from './sources.js';
 import { normalizeBase, uid } from './util.js';
+import { syncPayload } from './sync.js';
 
 export const STORAGE_KEY = 'vidlearn:v1';
 const MAX_HISTORY = 200;
@@ -29,6 +30,7 @@ export function defaultState() {
     notes: {},
     downloads: {}, // id ← { video, status, path, uri, size, quality, at, error }
     chapters: {},  // ספר שמע ← רשימת הפרקים (כדי שספר שמור יתנגן בלי רשת)
+    deleted: {},   // סנכרון: מה נמחק ומתי ('course:id' / 'fav:id' / 'note:id' / 'history') — שלא יחזור ממכשיר אחר
   };
 }
 
@@ -78,6 +80,7 @@ export function normalizeState(raw) {
       readerFont: Number.isFinite(Number(s.readerFont)) ? Math.min(32, Math.max(14, Number(s.readerFont))) : 19,
       sleepMin: Number(s.sleepMin) || 0,
       crossLang: s.crossLang === undefined ? true : !!s.crossLang,
+      updatedAt: Number(s.updatedAt) || 0, // סנכרון: ההגדרות החדשות יותר גוברות
     },
     courses: Array.isArray(raw.courses)
       ? raw.courses.filter((c) => c && typeof c.id === 'string' && Array.isArray(c.lessons))
@@ -89,7 +92,15 @@ export function normalizeState(raw) {
     notes: normalizeNotes(raw.notes),
     downloads: normalizeDownloads(raw.downloads),
     chapters: normalizeChapters(raw.chapters),
+    deleted: normalizeDeleted(raw.deleted),
   };
+}
+
+function normalizeDeleted(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [k, at] of Object.entries(raw)) if (Number(at) > 0 && k.length <= 200) out[k] = Number(at);
+  return out;
 }
 
 // סרטון שמור תקין: הממשק ניגש ל-id, ל-title ול-play בלי בדיקה
@@ -174,13 +185,18 @@ export function createStore(storage, { onSaveError } = {}) {
     }
   }
 
+  const now = () => Date.now();
+  const touchSettings = () => { state.settings.updatedAt = now(); };
+  const touchCourse = (c) => { c.updatedAt = now(); };
+  const markDeleted = (key) => { state.deleted[key] = now(); };
+
   const api = {
     get state() { return state; },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     save,
 
     // --- הגדרות ---
-    setSetting(key, value) { state.settings[key] = value; return save(); },
+    setSetting(key, value) { state.settings[key] = value; touchSettings(); return save(); },
     addSource({ type, name, url, key }) {
       if (!SOURCE_TYPES[type]) throw new Error('unknown-source');
       const src = { id: uid(), type, name: String(name || '').trim(), enabled: true };
@@ -191,6 +207,7 @@ export function createStore(storage, { onSaveError } = {}) {
       if (!src.name) src.name = src.url ? new URL(src.url).host : type;
       if (src.url && state.settings.sources.some((s) => s.type === type && s.url === src.url)) throw new Error('duplicate-source');
       state.settings.sources.push(src);
+      touchSettings();
       save();
       return src;
     },
@@ -200,12 +217,14 @@ export function createStore(storage, { onSaveError } = {}) {
       if ('enabled' in patch) s.enabled = !!patch.enabled;
       if ('key' in patch) s.key = String(patch.key || '').trim();
       if ('name' in patch && String(patch.name).trim()) s.name = String(patch.name).trim();
+      touchSettings();
       return save();
     },
     removeSource(id) {
       const s = state.settings.sources.find((x) => x.id === id);
       if (!s || s.builtin) return false;
       state.settings.sources = state.settings.sources.filter((x) => x.id !== id);
+      touchSettings();
       return save();
     },
 
@@ -214,11 +233,13 @@ export function createStore(storage, { onSaveError } = {}) {
       state.history = [{ video: snapshot(v), at: Date.now() }, ...state.history.filter((h) => h.video.id !== v.id)].slice(0, MAX_HISTORY);
       return save();
     },
-    clearHistory() { state.history = []; return save(); },
+    clearHistory() { state.history = []; markDeleted('history'); return save(); },
     isFavorite(id) { return state.favorites.some((v) => v.id === id); },
     toggleFavorite(v) {
-      if (api.isFavorite(v.id)) state.favorites = state.favorites.filter((x) => x.id !== v.id);
-      else state.favorites.unshift(snapshot(v));
+      if (api.isFavorite(v.id)) {
+        state.favorites = state.favorites.filter((x) => x.id !== v.id);
+        markDeleted(`fav:${v.id}`);
+      } else state.favorites.unshift({ ...snapshot(v), favAt: now() });
       return save();
     },
 
@@ -266,6 +287,7 @@ export function createStore(storage, { onSaveError } = {}) {
     },
     deleteNote(id, noteId) {
       state.notes[id] = (state.notes[id] || []).filter((n) => n.id !== noteId);
+      markDeleted(`note:${noteId}`);
       if (!state.notes[id].length) delete state.notes[id];
       return save();
     },
@@ -274,7 +296,7 @@ export function createStore(storage, { onSaveError } = {}) {
     createCourse(name, subject = '') {
       const clean = String(name || '').trim().slice(0, 120);
       if (!clean) throw new Error('empty-name');
-      const c = { id: uid(), name: clean, subject: String(subject || ''), createdAt: Date.now(), lessons: [] };
+      const c = { id: uid(), name: clean, subject: String(subject || ''), createdAt: Date.now(), updatedAt: Date.now(), lessons: [] };
       state.courses.unshift(c);
       save();
       return c;
@@ -284,10 +306,12 @@ export function createStore(storage, { onSaveError } = {}) {
       const clean = String(name || '').trim().slice(0, 120);
       if (!c || !clean) return false;
       c.name = clean;
+      touchCourse(c);
       return save();
     },
     deleteCourse(id) {
       state.courses = state.courses.filter((c) => c.id !== id);
+      markDeleted(`course:${id}`);
       return save();
     },
     addLesson(courseId, v) {
@@ -295,12 +319,14 @@ export function createStore(storage, { onSaveError } = {}) {
       if (!c) return false;
       if (c.lessons.some((l) => l.id === v.id)) return false;
       c.lessons.push(snapshot(v));
+      touchCourse(c);
       return save();
     },
     removeLesson(courseId, videoId) {
       const c = state.courses.find((x) => x.id === courseId);
       if (!c) return false;
       c.lessons = c.lessons.filter((l) => l.id !== videoId);
+      touchCourse(c);
       return save();
     },
     moveLesson(courseId, index, delta) {
@@ -309,6 +335,7 @@ export function createStore(storage, { onSaveError } = {}) {
       const j = index + delta;
       if (index < 0 || j < 0 || index >= c.lessons.length || j >= c.lessons.length) return false;
       [c.lessons[index], c.lessons[j]] = [c.lessons[j], c.lessons[index]];
+      touchCourse(c);
       return save();
     },
     // --- פרקי ספרי שמע ---
@@ -329,6 +356,23 @@ export function createStore(storage, { onSaveError } = {}) {
     setDownload(id, patch) {
       if (patch === null) delete state.downloads[id];
       else state.downloads[id] = { ...(state.downloads[id] || {}), ...patch };
+      return save();
+    },
+
+    // סנכרון: החלק שעובר בין מכשירים, ומיזוג שחוזר מ-Drive (sync.js)
+    syncPayload() { return syncPayload(state); },
+    applySync(payload) {
+      const keys = Object.fromEntries(state.settings.sources.filter((x) => x.key).map((x) => [x.id, x.key]));
+      const keepDownloads = state.downloads;
+      const next = normalizeState({
+        ...state,
+        settings: { ...state.settings, ...payload.settings }, // הגדרות ההורדה — של המכשיר הזה
+        courses: payload.courses, favorites: payload.favorites, history: payload.history,
+        progress: payload.progress, notes: payload.notes, deleted: payload.deleted,
+      });
+      next.downloads = keepDownloads;
+      next.settings.sources.forEach((x) => { if (keys[x.id]) x.key = keys[x.id]; }); // מפתחות לא עוברים בסנכרון
+      state = next;
       return save();
     },
 

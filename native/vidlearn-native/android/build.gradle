@@ -1,5 +1,7 @@
 ext {
     androidxCoreVersion = project.hasProperty('androidxCoreVersion') ? rootProject.ext.androidxCoreVersion : '1.15.0'
+    androidxActivityVersion = project.hasProperty('androidxActivityVersion') ? rootProject.ext.androidxActivityVersion : '1.9.2'
+    androidxAppCompatVersion = project.hasProperty('androidxAppCompatVersion') ? rootProject.ext.androidxAppCompatVersion : '1.7.0'
 }
 
 apply plugin: 'com.android.library'
@@ -25,4 +27,9 @@ repositories {
 dependencies {
     implementation project(':capacitor-android')
     implementation "androidx.core:core:$androidxCoreVersion"
+    implementation "androidx.activity:activity:$androidxActivityVersion"
+    // getActivity() של Capacitor מחזיר AppCompatActivity — נדרש לקומפילציה של registerForActivityResult
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    // כניסה עם Google (AuthorizationClient) — טוקן ליוטיוב ול-Drive
+    implementation "com.google.android.gms:play-services-auth:21.3.0"
 }
