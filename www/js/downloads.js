@@ -2,11 +2,22 @@
 // התור עובד אחד-אחד. הקבצים, הרשת והכתובת הישירה — דרך מתאמים, כדי שאפשר לבדוק בלי טלפון.
 //   fs:      { download(url, path, onProgress) → { uri }, stat(path) → size, remove(path), toSrc(uri) → src }
 //   network: { status() → { connected, type }, onChange(fn) }
-//   resolveUrl(video, quality) → כתובת קובץ ישירה או ''
+//   resolveUrl(video, quality) → { url, size } (size משוער, 0 = לא ידוע) או כתובת בלבד
 import { canDownload } from './sources.js';
 import { snapshot } from './store.js';
 
 export const MB = 1024 * 1024;
+
+// גיבוב FNV-1a של 64 סיביות (שני גיבובים של 32) — שם קובץ ייחודי לכל מזהה
+function hashId(str) {
+  let a = 0x811c9dc5, b = 0x01000193 ^ 0x5bd1e995;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b ^ c, 0x5bd1e995) ^ (b >>> 15);
+  }
+  return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
+}
 
 export function fileNameFor(v, url) {
   let ext = 'mp4';
@@ -14,18 +25,23 @@ export function fileNameFor(v, url) {
     const m = new URL(url).pathname.match(/\.(mp4|webm|ogv|m4v)$/i);
     if (m) ext = m[1].toLowerCase();
   } catch { /* ברירת מחדל mp4 */ }
-  const base = String(v.id).replace(/[^\w.-]+/g, '_').slice(0, 120);
-  return `videos/${base}.${ext}`;
+  // תחילית קריאה (סוג המקור) + גיבוב של המזהה המלא — שני סרטונים לא יקבלו אותו קובץ
+  const prefix = String(v.sourceType || 'video').replace(/[^\w-]+/g, '_').slice(0, 20);
+  return `videos/${prefix}-${hashId(String(v.id))}.${ext}`;
 }
 
 export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () => {} }) {
   const progress = new Map(); // id ← 0..1 (בזיכרון בלבד)
   let running = false;
+  let rerun = false; // בקשה ל-pump בזמן שהוא רץ — ירוץ שוב בסוף (שינוי רשת באמצע)
   let currentId = null;
 
   const settings = () => store.state.settings;
   const all = () => Object.values(store.state.downloads);
   const notify = () => { try { onUpdate(); } catch { /* הממשק לא מפיל את התור */ } };
+
+  const isSaved = (id) => store.getDownload(id)?.status === 'done';
+  const limitBytes = () => settings().dlLimitMB * MB;
 
   function usedBytes() {
     return all().filter((d) => d.status === 'done').reduce((sum, d) => sum + (Number(d.size) || 0), 0);
@@ -53,8 +69,10 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
 
   // מעבד את התור; רץ פעם אחת בכל רגע
   async function pump() {
-    if (running || !fs) return;
+    if (!fs) return;
+    if (running) { rerun = true; return; }
     running = true;
+    rerun = false;
     try {
       for (;;) {
         const next = all()
@@ -69,7 +87,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
           notify();
           break;
         }
-        if (usedBytes() >= settings().dlLimitMB * MB) {
+        if (usedBytes() >= limitBytes()) {
           store.setDownload(id, { status: 'error', error: 'limit' });
           notify();
           continue;
@@ -82,13 +100,20 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
         let path = '';
         try {
           const quality = settings().dlQuality;
-          const url = await resolveUrl(next.video, quality);
+          const r = await resolveUrl(next.video, quality);
+          const url = typeof r === 'string' ? r : r?.url;
+          const expected = typeof r === 'object' && r ? Number(r.size) || 0 : 0;
           if (!url) throw new Error('no-file');
+          // גודל ידוע מראש — לא מורידים קובץ שממילא לא ייכנס
+          if (expected && usedBytes() + expected > limitBytes()) {
+            store.setDownload(id, { status: 'error', error: 'limit' });
+            continue;
+          }
           path = fileNameFor(next.video, url);
           const { uri } = await fs.download(url, path, (p) => { progress.set(id, p); notify(); });
           if (!store.getDownload(id)) { await fs.remove(path).catch(() => {}); continue; } // בוטל באמצע
           const size = await fs.stat(path).catch(() => 0);
-          if (usedBytes() + size > settings().dlLimitMB * MB) {
+          if (usedBytes() + size > limitBytes()) {
             await fs.remove(path).catch(() => {});
             store.setDownload(id, { status: 'error', error: 'limit' });
           } else {
@@ -96,7 +121,11 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
           }
         } catch (e) {
           if (path) await fs.remove(path).catch(() => {});
-          if (store.getDownload(id)) store.setDownload(id, { status: 'error', error: String(e?.message || 'failed').slice(0, 80) });
+          // החיבור נפל באמצע ← ממתין לרשת (ימשיך לבד), לא שגיאה
+          const offline = !(await allowedNow());
+          if (store.getDownload(id)) {
+            store.setDownload(id, offline ? { status: 'waiting', error: null } : { status: 'error', error: String(e?.message || 'failed').slice(0, 80) });
+          }
         } finally {
           progress.delete(id);
           currentId = null;
@@ -106,6 +135,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
     } finally {
       running = false;
     }
+    if (rerun) pump();
   }
 
   async function remove(id) {
@@ -138,7 +168,8 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
     if (!settings().dlAutoNext || !course) return null;
     const i = course.lessons.findIndex((l) => l.id === currentVideoId);
     const next = course.lessons.slice(i + 1).find((l) => !store.state.progress[l.id]?.done && canDownload(l));
-    if (!next) return null;
+    // שיעור שכבר שמור / בתור / נכשל — לא מנסים שוב אוטומטית (רק המשתמש)
+    if (!next || store.getDownload(next.id)) return null;
     return enqueue(next, { auto: true }) === 'queued' ? next : null;
   }
 
@@ -150,7 +181,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
 
   // סימון "נלמד" ← מחיקה (אם הוגדר)
   function onLearned(id) {
-    if (settings().dlDeleteLearned && store.getDownload(id)?.status === 'done') return remove(id);
+    if (settings().dlDeleteLearned && isSaved(id)) return remove(id);
     return Promise.resolve(false);
   }
 
@@ -158,7 +189,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
 
   return {
     available: !!fs,
-    enqueue, remove, retry, pump, localSrc, prefetchNext, saveCourse, onLearned, usedBytes,
+    enqueue, remove, retry, pump, localSrc, prefetchNext, saveCourse, onLearned, usedBytes, isSaved, limitBytes,
     progressOf: (id) => progress.get(id) ?? null,
     get currentId() { return currentId; },
     list: () => all().sort((a, b) => b.at - a.at),
@@ -171,6 +202,6 @@ export function formatBytes(n) {
   let t;
   if (n >= 1024 * MB) t = (n / (1024 * MB)).toFixed(1) + ' GB';
   else if (n >= MB) t = Math.round(n / MB) + ' MB';
-  else t = Math.max(1, Math.round(n / 1024)) + ' KB';
+  else t = (n > 0 ? Math.max(1, Math.round(n / 1024)) : 0) + ' KB';
   return '\u2066' + t + '\u2069';
 }

@@ -125,6 +125,14 @@ function setLearned(id, done) {
   if (done) downloads.onLearned(id);
 }
 
+// שמירת מיקום; כשהיא מסמנת "נלמד" (90%) — כמו סימון ידני.
+// onLearned: מה לעשות כשהסרטון נהיה "נלמד" (בנגן — דוחים את המחיקה עד היציאה מהמסך)
+function savePosition(id, pos, dur, onLearned = () => downloads.onLearned(id)) {
+  const was = !!store.getProgress(id)?.done;
+  store.setPosition(id, pos, dur);
+  if (!was && store.getProgress(id)?.done) onLearned();
+}
+
 function remember(v) { known.set(v.id, v); return v; }
 function findVideo(id) {
   if (known.has(id)) return known.get(id);
@@ -149,7 +157,7 @@ function videoCard(v, { courseId } = {}) {
       thumb ? h('img', { src: thumb, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }) : null,
       v.duration ? h('span', { class: 'dur' }, formatDuration(v.duration)) : null,
       p?.done ? h('span', { class: 'check' }, '✓ ' + tr('done')) : null,
-      store.getDownload(v.id)?.status === 'done' ? h('span', { class: 'saved', title: tr('savedOffline'), 'aria-label': tr('savedOffline') }, '⬇') : null,
+      downloads.isSaved(v.id) ? h('span', { class: 'saved', title: tr('savedOffline'), 'aria-label': tr('savedOffline') }, '⬇') : null,
       pct && !p?.done ? h('span', { class: 'bar' }, h('i', { style: `width:${pct}%` })) : null,
     ),
     h('div', { class: 'meta' },
@@ -296,13 +304,27 @@ function renderLibrary(params) {
   return [h('h1', {}, tr('library')), tabs, body];
 }
 
-// מסך "שמורים בטלפון": נפח, התקדמות, מחיקה וניסיון חוזר — מתעדכן בזמן ההורדה
+// מסך "שמורים בטלפון": נפח, התקדמות, מחיקה וניסיון חוזר.
+// בזמן הורדה מתעדכנות רק התוויות — הרשימה נבנית מחדש רק כשהמבנה משתנה,
+// אחרת לחיצה על כפתור באמצע עדכון הייתה הולכת לאיבוד.
 function renderDownloads() {
   if (!downloads.available) return h('p', { class: 'muted' }, tr('dlOnlyInApp'));
   const box = h('div', {});
+  let shape = '';
+  const labels = new Map(); // id ← הטקסט שמתעדכן
   const draw = () => {
     const list = downloads.list();
-    const limit = store.state.settings.dlLimitMB * 1024 * 1024;
+    const nextShape = list.map((d) => `${d.video.id}:${dlLabel(d.video.id).state}`).join('|');
+    if (nextShape === shape) {
+      for (const d of list) {
+        const el = labels.get(d.video.id);
+        if (el && d.status !== 'done') el.textContent = dlLabel(d.video.id).text;
+      }
+      return;
+    }
+    shape = nextShape;
+    labels.clear();
+    const limit = downloads.limitBytes();
     const used = downloads.usedBytes();
     fill(box,
       h('p', { class: 'muted small' }, tr('dlUsed', formatBytes(used), formatBytes(limit))),
@@ -310,11 +332,11 @@ function renderDownloads() {
       list.length ? h('div', { class: 'panel' }, list.map((d) => {
         const v = remember(d.video);
         const l = dlLabel(v.id);
+        const label = h('span', { class: 'muted small' }, l.state === 'done' ? [formatBytes(d.size), formatDuration(v.duration), v.sourceName].filter(Boolean).join(' · ') : l.text);
+        labels.set(v.id, label);
         return h('div', { class: 'lesson' },
           h('span', { class: `num${l.state === 'done' ? ' ok' : l.state === 'error' ? '' : ' cur'}` }, l.state === 'done' ? '✓' : l.state === 'error' ? '!' : '⬇'),
-          h('div', { class: 'info', onclick: () => go(watchHash(v)) },
-            h('b', {}, v.title),
-            h('span', { class: 'muted small' }, l.state === 'done' ? [formatBytes(d.size), formatDuration(v.duration), v.sourceName].filter(Boolean).join(' · ') : l.text)),
+          h('div', { class: 'info', onclick: () => go(watchHash(v)) }, h('b', {}, v.title), label),
           h('div', { class: 'tools' },
             l.state === 'error' ? h('button', { type: 'button', 'aria-label': tr('dlFailed'), title: tr('dlFailed'), onclick: () => downloads.retry(v.id) }, '↻') : null,
             h('button', { type: 'button', 'aria-label': tr('dlRemove'), title: tr('dlRemove'), onclick: () => confirmDialog(tr('dlConfirmRemove'), () => downloads.remove(v.id)) }, '🗑')));
@@ -349,7 +371,7 @@ function renderCourse(id) {
       return h('div', { class: 'lesson' },
         h('span', { class: `num${done ? ' ok' : i === pr.nextIndex ? ' cur' : ''}` }, done ? '✓' : String(i + 1)),
         h('div', { class: 'info', onclick: () => go(watchHash(l, c.id)) },
-          h('b', {}, l.title), h('span', { class: 'muted small' }, [store.getDownload(l.id)?.status === 'done' ? '⬇' : '', formatDuration(l.duration), l.sourceName].filter(Boolean).join(' · '))),
+          h('b', {}, l.title), h('span', { class: 'muted small' }, [downloads.isSaved(l.id) ? '⬇' : '', formatDuration(l.duration), l.sourceName].filter(Boolean).join(' · '))),
         h('div', { class: 'tools' },
           h('button', { type: 'button', 'aria-label': tr('moveUp'), title: tr('moveUp'), onclick: () => { store.moveLesson(c.id, i, -1); route(); } }, '▲'),
           h('button', { type: 'button', 'aria-label': tr('moveDown'), title: tr('moveDown'), onclick: () => { store.moveLesson(c.id, i, 1); route(); } }, '▼'),
@@ -371,6 +393,8 @@ function renderWatch(id, params) {
   const offlineNote = h('div', { class: 'notice small', hidden: true }, tr('playingOffline'));
   let videoEl = null;
   let disposed = false;
+  let learnedWhilePlaying = false; // נלמד ב-90% — הקובץ השמור נמחק (אם הוגדר) רק ביציאה, לא באמצע הצפייה
+  const markLearned = () => { learnedWhilePlaying = true; };
   let lastSaved = 0;
 
   function mountVideo(url, { local = false } = {}) {
@@ -383,9 +407,9 @@ function renderWatch(id, params) {
     });
     videoEl.addEventListener('timeupdate', () => {
       const now = Date.now();
-      if (now - lastSaved > 5000) { lastSaved = now; store.setPosition(v.id, videoEl.currentTime, videoEl.duration); }
+      if (now - lastSaved > 5000) { lastSaved = now; savePosition(v.id, videoEl.currentTime, videoEl.duration, markLearned); }
     });
-    videoEl.addEventListener('pause', () => store.setPosition(v.id, videoEl.currentTime, videoEl.duration));
+    videoEl.addEventListener('pause', () => savePosition(v.id, videoEl.currentTime, videoEl.duration, markLearned));
     videoEl.addEventListener('ended', () => { setLearned(v.id, true); drawActions(); offerNext(); });
     // קובץ מקומי שנפגע / נמחק ← מהרשת; קובץ ישיר שנכשל ← הנגן המוטמע
     videoEl.addEventListener('error', () => { if (local) mountOnline(); else if (v.play.kind === 'iframe') mountIframe(); }, { once: true });
@@ -475,7 +499,7 @@ function renderWatch(id, params) {
       return h('div', { class: 'lesson' },
         h('span', { class: `num${done ? ' ok' : cur ? ' cur' : ''}` }, done ? '✓' : String(i + 1)),
         h('div', { class: 'info', onclick: () => { if (!cur) go(watchHash(l, course.id)); } }, h('b', {}, l.title)),
-        store.getDownload(l.id)?.status === 'done' ? h('span', { class: 'muted', title: tr('savedOffline'), 'aria-label': tr('savedOffline') }, '⬇') : null);
+        downloads.isSaved(l.id) ? h('span', { class: 'muted', title: tr('savedOffline'), 'aria-label': tr('savedOffline') }, '⬇') : null);
     })) : null;
 
   // הנגן נטען אחרי שכל חלקי המסך (גם ההערות) קיימים — סרטון שמור נטען מיד, בלי רשת
@@ -484,8 +508,9 @@ function renderWatch(id, params) {
 
   cleanupView = () => {
     disposed = true;
-    if (videoEl && videoEl.duration) store.setPosition(v.id, videoEl.currentTime, videoEl.duration);
+    if (videoEl && videoEl.duration) savePosition(v.id, videoEl.currentTime, videoEl.duration, markLearned);
     if (videoEl) { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); }
+    if (learnedWhilePlaying) setTimeout(() => downloads.onLearned(v.id), 0); // אחרי שהנגן שחרר את הקובץ
   };
 
   return [

@@ -301,18 +301,25 @@ export function buildResolveUrl(v) {
   if (v.sourceType === 'peertube' && v.host && v.nativeId) {
     return `https://${v.host}/api/v1/videos/${encodeURIComponent(v.nativeId)}`;
   }
+  if (v.sourceType === 'commons' && /^\d+$/.test(String(v.nativeId || ''))) {
+    return `https://commons.wikimedia.org/w/api.php?action=query&prop=videoinfo&viprop=derivatives%7Csize%7Curl&pageids=${v.nativeId}&format=json&origin=*`;
+  }
   return '';
 }
 
-// ← כתובת mp4 ישירה, או '' (ואז נשארים עם הנגן המוטמע)
+const MAX_HEIGHT = { low: 480, normal: 720 };
+
+// ← { url, size } של הקובץ המתאים לאיכות (size משוער, 0 = לא ידוע), או { url: '' }
 // quality: 'normal' (עד 720p) לצפייה ולהורדה רגילה, 'low' (עד 480p / 512kb) לחיסכון במקום
-export function parseResolve(v, json, quality = 'normal') {
-  if (!json || typeof json !== 'object') return '';
+export function resolveFile(v, json, quality = 'normal') {
+  const none = { url: '', size: 0 };
+  if (!json || typeof json !== 'object') return none;
   const low = quality === 'low';
+  const max = MAX_HEIGHT[low ? 'low' : 'normal'];
   if (v.sourceType === 'archive') {
     const files = Array.isArray(json.files) ? json.files : [];
     const mp4 = files.filter((f) => f && typeof f.name === 'string' && /\.mp4$/i.test(f.name));
-    if (!mp4.length) return '';
+    if (!mp4.length) return none;
     const is512 = (f) => /512kb/i.test(f.name) || /512kb/i.test(f.format || '');
     // רגיל: נגזרת h.264 (איכות טובה, גודל סביר) ← 512kb ← מקור; חסכוני: 512kb קודם
     const rank = (f) => (low
@@ -320,7 +327,7 @@ export function parseResolve(v, json, quality = 'normal') {
       : (!is512(f) && f.source === 'derivative' ? 0 : is512(f) ? 1 : 2));
     mp4.sort((a, b) => rank(a) - rank(b) || (Number(a.size) || 0) - (Number(b.size) || 0));
     const path = mp4[0].name.split('/').map(encodeURIComponent).join('/');
-    return `https://archive.org/download/${encodeURIComponent(v.nativeId)}/${path}`;
+    return { url: `https://archive.org/download/${encodeURIComponent(v.nativeId)}/${path}`, size: Number(mp4[0].size) || 0 };
   }
   if (v.sourceType === 'peertube') {
     let files = Array.isArray(json.files) ? json.files : [];
@@ -329,19 +336,38 @@ export function parseResolve(v, json, quality = 'normal') {
     }
     const res = (f) => Number(f.resolution?.id ?? f.resolution) || 0;
     const usable = files.filter((f) => safeUrl(f.fileUrl) && res(f) > 0);
-    if (!usable.length) return '';
-    const max = low ? 480 : 720;
+    if (!usable.length) return none;
     const atMost = usable.filter((f) => res(f) <= max).sort((a, b) => res(b) - res(a));
     const pick = atMost[0] || usable.sort((a, b) => res(a) - res(b))[0];
-    return safeUrl(pick.fileUrl);
+    return { url: safeUrl(pick.fileUrl), size: Number(pick.size) || 0 };
   }
-  return '';
+  if (v.sourceType === 'commons') {
+    const info = Object.values(json.query?.pages || {})[0]?.videoinfo?.[0];
+    if (!info) return none;
+    const duration = Number(info.duration) || Number(v.duration) || 0;
+    // גרסאות מוקטנות של ויקישיתוף (webm); mov לא מתנגן בטלפון
+    const derivs = (Array.isArray(info.derivatives) ? info.derivatives : [])
+      .filter((d) => safeUrl(d.src) && /webm/i.test(d.type || d.src) && Number(d.height) > 0 && Number(d.height) <= max)
+      .sort((a, b) => Number(b.height) - Number(a.height));
+    if (derivs.length) {
+      const d = derivs[0];
+      return { url: safeUrl(d.src), size: Math.round(((Number(d.bandwidth) || 0) * duration) / 8) };
+    }
+    const orig = safeUrl(info.url) || safeUrl(v.play?.url);
+    return { url: orig, size: Number(info.size) || 0 };
+  }
+  return none;
+}
+
+// ← כתובת קובץ ישירה בלבד, או '' (ואז נשארים עם הנגן המוטמע)
+export function parseResolve(v, json, quality = 'normal') {
+  return resolveFile(v, json, quality).url;
 }
 
 // אפשר לשמור בטלפון רק סרטון עם קובץ ישיר (לא יוטיוב / Invidious)
 export function canDownload(v) {
   if (!v) return false;
-  if (v.sourceType === 'commons') return v.play?.kind === 'video' && !!safeUrl(v.play.url);
+  if (v.sourceType === 'commons') return v.play?.kind === 'video' && !!safeUrl(v.play.url) && /^\d+$/.test(String(v.nativeId || ''));
   if (v.sourceType === 'archive') return !!v.nativeId;
   if (v.sourceType === 'peertube') return !!(v.host && v.nativeId);
   return false;

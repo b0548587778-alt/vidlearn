@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSearchUrl, parseResults, parseResolve, buildResolveUrl, DEFAULT_SOURCES, sourceReady } from '../www/js/sources.js';
+import { buildSearchUrl, parseResults, parseResolve, resolveFile, buildResolveUrl, DEFAULT_SOURCES, sourceReady } from '../www/js/sources.js';
 
 const src = (id) => DEFAULT_SOURCES.find((s) => s.id === id);
 
@@ -95,4 +95,27 @@ test('PeerTube: בחירת קובץ עד 720p, גם מתוך HLS', () => {
 test('שרת מותאם — רק https', () => {
   assert.throws(() => buildSearchUrl({ type: 'peertube', url: 'http://tube.x' }, 'a'), /https-only/);
   assert.match(buildSearchUrl({ type: 'peertube', url: 'tube.x/' }, 'a'), /^https:\/\/tube\.x\/api\/v1\/search\/videos\?/);
+});
+
+test('סקירה: Commons — גרסה מוקטנת לפי האיכות, עם גודל משוער', () => {
+  const v = { sourceType: 'commons', nativeId: '54082866', duration: 470, play: { kind: 'video', url: 'https://upload.wikimedia.org/orig.webm' } };
+  assert.match(buildResolveUrl(v), /pageids=54082866/);
+  const json = { query: { pages: { 1: { videoinfo: [{ url: 'https://upload.wikimedia.org/orig.webm', size: 36669270, duration: 469.8, derivatives: [
+    { src: 'https://upload.wikimedia.org/t/a.240p.vp9.webm', type: 'video/webm', height: 240, bandwidth: 104144 },
+    { src: 'https://upload.wikimedia.org/t/a.360p.mpeg4.mov', type: 'video/quicktime', height: 360, bandwidth: 302024 },
+    { src: 'https://upload.wikimedia.org/t/a.480p.vp9.webm', type: 'video/webm', height: 480, bandwidth: 140360 },
+    { src: 'https://upload.wikimedia.org/t/a.720p.vp9.webm', type: 'video/webm', height: 720, bandwidth: 250000 },
+    { src: 'https://upload.wikimedia.org/t/a.1080p.vp9.webm', type: 'video/webm', height: 1080, bandwidth: 317032 },
+  ] }] } } } };
+  assert.equal(resolveFile(v, json, 'low').url, 'https://upload.wikimedia.org/t/a.480p.vp9.webm');
+  assert.equal(resolveFile(v, json, 'low').size, Math.round(140360 * 469.8 / 8));
+  assert.equal(resolveFile(v, json).url, 'https://upload.wikimedia.org/t/a.720p.vp9.webm');
+  // בלי גרסאות מוקטנות — המקור, עם הגודל האמיתי
+  const plain = { query: { pages: { 1: { videoinfo: [{ url: 'https://upload.wikimedia.org/orig.webm', size: 999 }] } } } };
+  assert.deepEqual(resolveFile(v, plain), { url: 'https://upload.wikimedia.org/orig.webm', size: 999 });
+});
+
+test('סקירה: גודל הקובץ מ-Archive ומ-PeerTube', () => {
+  assert.equal(resolveFile({ sourceType: 'archive', nativeId: 'x' }, { files: [{ name: 'a.mp4', size: '1234', source: 'derivative' }] }).size, 1234);
+  assert.equal(resolveFile({ sourceType: 'peertube', host: 'h', nativeId: 'u' }, { files: [{ resolution: { id: 480 }, fileUrl: 'https://h/a.mp4', size: 777 }] }).size, 777);
 });

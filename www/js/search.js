@@ -1,5 +1,6 @@
 // חיפוש מקביל בכל המקורות הפעילים. מקור שנכשל לא מפיל את החיפוש.
-import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, parseResolve } from './sources.js';
+import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile } from './sources.js';
+import { safeUrl } from './util.js';
 import { isAllowed, mergeResults } from './filter.js';
 
 export const TIMEOUT_MS = 12000;
@@ -48,14 +49,22 @@ export async function searchAll(query, settings, { cursors = null, fetchImpl = f
   return { items: mergeResults(lists), cursors: nextCursors, hasMore, errors, filtered, searched: active.length };
 }
 
-// ניסיון לקבל קובץ וידאו ישיר; כשל ← '' (נשארים עם הנגן המוטמע)
-export async function resolveDirect(v, { fetchImpl = fetch, quality = 'normal' } = {}) {
-  if (v.sourceType === 'commons') return v.play?.kind === 'video' ? v.play.url : '';
+// הקובץ הישיר לסרטון ← { url, size }; כשל ← { url: '' } (נשארים עם הנגן המוטמע)
+export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'normal' } = {}) {
   const url = buildResolveUrl(v);
-  if (!url) return '';
-  try {
-    return parseResolve(v, await getJson(url, fetchImpl, 8000), quality);
-  } catch {
-    return '';
+  if (url) {
+    try {
+      const r = resolveFile(v, await getJson(url, fetchImpl, 8000), quality);
+      if (r.url) return r;
+    } catch { /* ממשיכים לגיבוי */ }
   }
+  // Commons: אם ה-API לא ענה — הקובץ המקורי מהחיפוש
+  if (v.sourceType === 'commons' && v.play?.kind === 'video') return { url: safeUrl(v.play.url), size: 0 };
+  return { url: '', size: 0 };
+}
+
+// לנגן: רק הכתובת. Commons מתנגן ישר מהקובץ שבחיפוש, בלי פנייה נוספת
+export async function resolveDirect(v, opts = {}) {
+  if (v.sourceType === 'commons') return v.play?.kind === 'video' ? safeUrl(v.play.url) : '';
+  return (await resolveDirectFile(v, opts)).url;
 }

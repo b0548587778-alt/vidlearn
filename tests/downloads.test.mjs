@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDownloads, fileNameFor, MB } from '../www/js/downloads.js';
+import { createDownloads, fileNameFor, formatBytes, MB } from '../www/js/downloads.js';
 import { createStore, normalizeState } from '../www/js/store.js';
 import { canDownload } from '../www/js/sources.js';
 
@@ -34,8 +34,8 @@ async function settle(dl) { for (let i = 0; i < 20; i++) await idle(); }
 test('מה אפשר להוריד: לא יוטיוב', () => {
   assert.equal(canDownload(arch('a')), true);
   assert.equal(canDownload({ id: 'youtube:x', sourceType: 'youtube', play: { kind: 'iframe', url: 'https://www.youtube-nocookie.com/embed/x' } }), false);
-  assert.equal(canDownload({ sourceType: 'commons', play: { kind: 'video', url: 'https://upload.wikimedia.org/a.webm' } }), true);
-  assert.equal(fileNameFor({ id: 'commons:5' }, 'https://upload.wikimedia.org/x/a.webm?utm=1'), 'videos/commons_5.webm');
+  assert.equal(canDownload({ sourceType: 'commons', nativeId: '5', play: { kind: 'video', url: 'https://upload.wikimedia.org/a.webm' } }), true);
+  assert.match(fileNameFor({ id: 'commons:5', sourceType: 'commons' }, 'https://upload.wikimedia.org/x/a.webm?utm=1'), /^videos\/commons-[0-9a-f]{16}\.webm$/);
 });
 
 test('הורדה: נשמר, גודל, נגן מקומי, ומחיקה', async () => {
@@ -48,8 +48,9 @@ test('הורדה: נשמר, גודל, נגן מקומי, ומחיקה', async ()
   const d = store.getDownload('archive:a');
   assert.equal(d.status, 'done');
   assert.equal(d.size, 10 * MB);
-  assert.equal(d.path, 'videos/archive_a.mp4');
-  assert.equal(dl.localSrc('archive:a'), 'https://localhost/_capacitor_file_/data/videos/archive_a.mp4');
+  assert.match(d.path, /^videos\/archive-[0-9a-f]{16}\.mp4$/);
+  assert.equal(dl.localSrc('archive:a'), 'https://localhost/_capacitor_file_/data/' + d.path);
+  assert.equal(dl.isSaved('archive:a'), true);
   assert.equal(dl.usedBytes(), 10 * MB);
   await dl.remove('archive:a');
   assert.equal(fs.files.size, 0);
@@ -158,4 +159,80 @@ test('הורדה שנקטעה חוזרת לתור; גיבוי לא כולל קב
   assert.deepEqual(JSON.parse(s.exportJson()).downloads, {});
   s.importJson(JSON.stringify({ settings: {} }));
   assert.equal(s.getDownload('archive:a').status, 'done', 'ייבוא לא מוחק את מה שבטלפון');
+});
+
+test('סקירה: שני סרטונים עם מזהה ארוך דומה — קבצים שונים', () => {
+  const host = 'x'.repeat(150);
+  const a = fileNameFor({ id: `peertube:${host}:uuid-1`, sourceType: 'peertube' }, 'https://h/a.mp4');
+  const b = fileNameFor({ id: `peertube:${host}:uuid-2`, sourceType: 'peertube' }, 'https://h/a.mp4');
+  assert.notEqual(a, b);
+  assert.notEqual(fileNameFor({ id: 'a:b' }, ''), fileNameFor({ id: 'a_b' }, ''));
+});
+
+test('סקירה: החיבור נפל באמצע ההורדה ← ממתין, וממשיך כשהרשת חוזרת', async () => {
+  const store = createStore(mem());
+  const net = fakeNet('wifi');
+  const fs = fakeFs();
+  const ok = fs.download;
+  fs.download = async () => { net.type = 'none'; throw new Error('connection reset'); };
+  const dl = createDownloads({ store, fs, network: net, resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'waiting');
+  fs.download = ok;
+  net.type = 'wifi';
+  net.fire();
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'done');
+});
+
+test('סקירה: Wi-Fi חזר בזמן בדיקת הרשת — התור לא נתקע', async () => {
+  const store = createStore(mem());
+  let release;
+  const net = fakeNet('cellular');
+  const realStatus = net.status;
+  let first = true;
+  net.status = async () => {
+    if (first) { first = false; const r = await realStatus(); await new Promise((res) => { release = res; }); return r; }
+    return realStatus();
+  };
+  const dl = createDownloads({ store, fs: fakeFs(), network: net, resolveUrl });
+  dl.enqueue(arch('a'));
+  await idle();
+  net.type = 'wifi';
+  net.fire();           // pump רץ — הבקשה נרשמת להרצה חוזרת
+  release();            // התשובה הישנה (סלולר) מגיעה רק עכשיו
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'done');
+});
+
+test('סקירה: גודל ידוע מראש שחורג מהתקרה — לא מורידים בכלל', async () => {
+  const store = createStore(mem());
+  store.setSetting('dlLimitMB', 100);
+  const fs = fakeFs();
+  let downloaded = 0;
+  const orig = fs.download;
+  fs.download = async (...a) => { downloaded++; return orig(...a); };
+  const dl = createDownloads({ store, fs, network: fakeNet(), resolveUrl: async (v) => ({ url: `https://archive.org/download/${v.nativeId}/x.mp4`, size: 500 * MB }) });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').error, 'limit');
+  assert.equal(downloaded, 0);
+});
+
+test('סקירה: שיעור הבא שנכשל לא נשלח שוב אוטומטית', async () => {
+  const store = createStore(mem());
+  const c = store.createCourse('ק');
+  ['a', 'b'].forEach((x) => store.addLesson(c.id, arch(x)));
+  const dl = createDownloads({ store, fs: fakeFs(), network: fakeNet(), resolveUrl: async () => '' });
+  assert.equal(dl.prefetchNext(store.state.courses[0], 'archive:a').id, 'archive:b');
+  await settle(dl);
+  assert.equal(store.getDownload('archive:b').status, 'error');
+  assert.equal(dl.prefetchNext(store.state.courses[0], 'archive:a'), null);
+  assert.equal(store.getDownload('archive:b').status, 'error');
+});
+
+test('סקירה: 0 בתים = 0 KB', () => {
+  assert.equal(formatBytes(0).replace(/[\u2066\u2069]/g, ''), '0 KB');
+  assert.equal(formatBytes(42 * MB).replace(/[\u2066\u2069]/g, ''), '42 MB');
 });
