@@ -44,6 +44,22 @@ jobs:
       # במפתח אחר, ואנדרואיד מסרב לעדכן את האפליקציה המותקנת (והסרה מוחקת את הנתונים).
       # המפתח מועבר ל-Gradle במפורש (android.injected.signing.*): הנחה בתיקיית ברירת המחדל
       # (~/.android/debug.keystore) לא נקראה, וכל בנייה נחתמה במפתח אקראי אחר
+      # Gradle נשמר במטמון של GitHub — כך שתקלה בשרת ההורדות שלו (504 לאורך דקות) לא מפילה את הבנייה.
+      # גרסת bin (בלי קוד מקור ותיעוד) — קטנה יותר מ-all
+      - name: Use the Gradle bin distribution
+        run: sed -i 's/-all\.zip/-bin.zip/' android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper/dists
+            ~/.gradle/caches/modules-2
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}-
+            gradle-${{ runner.os }}-
+
       - name: Use the fixed signing key
         env:
           KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
