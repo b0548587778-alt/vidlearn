@@ -62,6 +62,10 @@ const fsAdapter = FS ? {
       if (p && p.url === url && p.contentLength > 0) onProgress(p.bytes / p.contentLength);
     });
     try {
+      // התיקייה (videos/) חייבת להיות קיימת: downloadFile של התוסף (גרסה 7) מתעלם מ-recursive,
+      // ובלעדיה כל הורדה נכשלה ב"קובץ לא נמצא"
+      const dir = path.split('/').slice(0, -1).join('/');
+      if (dir) await FS.mkdir({ path: dir, directory: 'DATA', recursive: true }).catch(() => {}); // קיימת — בסדר
       await FS.downloadFile({ url, path, directory: 'DATA', progress: true, recursive: true });
       const { uri } = await FS.getUri({ path, directory: 'DATA' });
       return { uri };
@@ -129,7 +133,9 @@ function dlLabel(id) {
   if (d.status === 'downloading') return { text: tr('dlDownloading', Math.round((downloads.progressOf(id) || 0) * 100)), state: 'busy' };
   if (d.status === 'waiting') return { text: tr('dlWaiting'), state: 'busy' };
   if (d.status === 'queued') return { text: tr('dlQueued'), state: 'busy' };
-  return { text: d.error === 'limit' ? tr('dlLimit') : tr('dlFailed'), state: 'error' };
+  // הסיבה המדויקת (למשל "http-404") — כדי שאפשר יהיה לדעת מה השתבש
+  const reason = d.error && d.error !== 'limit' && d.error !== 'failed' ? ` (${String(d.error).slice(0, 60)})` : '';
+  return { text: d.error === 'limit' ? tr('dlLimit') : tr('dlFailed') + reason, state: 'error' };
 }
 
 // כפתור שמירה שמתעדכן לבד; onDone — למשל להחליף את הנגן לקובץ המקומי
