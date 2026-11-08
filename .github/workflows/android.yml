@@ -78,11 +78,23 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          # הורדת Gradle נקטעת לפעמים (פסק זמן של 10 שניות, או 504 מהשרת) — זמן ארוך יותר וניסיונות חוזרים
-          # להורדה בלבד; הבנייה עצמה רצה פעם אחת
-          sed -i 's/^networkTimeout=.*/networkTimeout=120000/' gradle/wrapper/gradle-wrapper.properties
-          # עד 6 ניסיונות לאורך כ-7 דקות (שרת ההורדות החזיר 504 כמה דקות ברצף)
-          for i in 1 2 3 4 5 6; do ./gradlew --version --no-daemon >/dev/null && break; echo "Gradle download failed (attempt $i), retrying in $((i * 20))s"; sleep $((i * 20)); done
+          # הורדת Gradle נכשלת לפעמים לאורך דקות (פסק זמן / 504 משרת ההורדות ב-GitHub).
+          # שני ניסיונות מהשרת הרשמי, ואז אתרי מראה — עם בדיקת SHA-256 הרשמית, כך שקובץ שונה נדחה
+          PROPS=gradle/wrapper/gradle-wrapper.properties
+          sed -i 's/^networkTimeout=.*/networkTimeout=120000/' $PROPS
+          GV=$(sed -n 's/.*gradle-\([0-9.]*\)-bin\.zip.*/\1/p' $PROPS)
+          MIRRORS=""
+          if [ "$GV" = "8.11.1" ]; then
+            echo "distributionSha256Sum=f397b287023acdba1e9f6fc5ea72d22dd63669d59ed4a289a29b1a76eee151c6" >> $PROPS
+            MIRRORS="https\\://mirrors.cloud.tencent.com/gradle/gradle-$GV-bin.zip https\\://mirrors.aliyun.com/gradle/distributions/v$GV/gradle-$GV-bin.zip"
+          fi
+          ok=""
+          for url in official official $MIRRORS; do
+            if [ "$url" != official ]; then sed -i "s#^distributionUrl=.*#distributionUrl=$url#" $PROPS; echo "trying mirror $url"; fi
+            if ./gradlew --version --no-daemon >/dev/null; then ok=1; break; fi
+            echo "Gradle download failed, retrying"; sleep 20
+          done
+          [ -n "$ok" ] || { echo "::error::could not download Gradle"; exit 1; }
           ./gradlew assembleDebug --no-daemon $SIGNING_ARGS
 
       # ה-APK חייב להיות חתום במפתח הקבוע — אחרת הוא לא יתקין עדכון, ועדיף שהבנייה תיכשל
