@@ -26,7 +26,8 @@
 
 ## קבלת קובץ APK
 כל דחיפה ל-`main` בונה APK ב-GitHub Actions (`Build Android APK` ← Artifacts ← `VidLearn-apk`).
-תגית `v*` (למשל `v0.1.0`) מצרפת את ה-APK ל-Release — אפשר להוריד ישר מהטלפון.
+כל בנייה מ-`main` מתפרסמת גם כ-Release — הורדה ישירה מהטלפון:
+https://github.com/b0548587778-alt/vidlearn/releases/latest/download/VidLearn.apk
 (APK לניפוי שגיאות — מתקינים עם "התרת מקורות לא ידועים". לחנות Play צריך חתימה.)
 
 ## פיתוח

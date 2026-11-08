@@ -50,9 +50,14 @@ jobs:
           name: VidLearn-apk
           path: VidLearn.apk
 
-      # גרסה עם תגית v* — מצורפת ל-Release, להורדה ישירה מהטלפון
+      # כל בנייה מ-main מתפרסמת כגרסה — קישור קבוע להורדה מהטלפון:
+      # https://github.com/<owner>/vidlearn/releases/latest/download/VidLearn.apk
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: VidLearn ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('build {0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           files: VidLearn.apk
