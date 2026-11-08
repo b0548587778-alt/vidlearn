@@ -1161,6 +1161,8 @@ function renderRead(id) {
   return [mediaHead(book), mediaActions(book), body];
 }
 
+const PRIVACY_URL = 'https://b0548587778-alt.github.io/vidlearn/privacy.html';
+
 // חשבון Google בהגדרות: כניסה / יציאה, מצב הסנכרון, והוראות ההגדרה החד-פעמית
 function googlePanel() {
   const panel = h('div', { class: 'panel', id: 'src-google' });
@@ -1201,6 +1203,20 @@ function googlePanel() {
     }
   };
   const signOut = async () => { await google.signOut(); lastSearch = null; toast(tr('googleSignedOut')); draw(); };
+  const deleteRemote = async () => {
+    if (!window.confirm(tr('googleDeleteConfirm'))) return;
+    busy = true; draw();
+    try {
+      await google.deleteRemote();
+      await google.signOut();
+      lastSearch = null;
+      toast(tr('googleDeleted'));
+    } catch {
+      toast(tr('googleDeleteFailed'));
+    } finally {
+      busy = false; draw();
+    }
+  };
 
   function draw() {
     const st = google.status;
@@ -1222,14 +1238,16 @@ function googlePanel() {
         h('div', { class: 'row', style: 'margin-top:8px' },
           needsConsent ? h('button', { class: 'btn btn-primary btn-sm', type: 'button', disabled: busy, onclick: signIn }, tr('googleSignIn')) : null,
           h('button', { class: 'btn btn-sm', type: 'button', disabled: st.syncing, onclick: () => google.sync() }, '⟳ ' + tr('googleSyncNow')),
-          h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: signOut }, tr('googleSignOut'))),
+          h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: signOut }, tr('googleSignOut')),
+          h('button', { class: 'btn btn-sm btn-danger', type: 'button', disabled: busy, onclick: deleteRemote }, tr('googleDeleteRemote'))),
       ];
     }
     fill(panel, h('h2', { style: 'margin-top:0' }, tr('googleAccount')),
       h('p', { class: 'muted small' }, tr('googleIntro')),
       body,
       lastError ? h('div', { class: 'notice warn small' }, tr(lastError)) : null,
-      google.available && !a ? setup : null);
+      google.available && !a ? setup : null,
+      h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: PRIVACY_URL, target: '_blank', rel: 'noopener noreferrer' }, tr('privacyPolicy'))));
   }
   draw();
   const off = google.onChange(() => { if (panel.isConnected) draw(); });

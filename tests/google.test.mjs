@@ -100,3 +100,22 @@ test('שגיאות כניסה ← הודעה מתאימה', () => {
   assert.equal(signInErrorKey({ message: 'network' }), 'googleNetwork');
   assert.equal(signInErrorKey(new Error('failed:8')), 'googleFailed');
 });
+
+test('מחיקת הנתונים מ-Drive: הקובץ נמחק, הנתונים בטלפון נשארים', async () => {
+  const storage = mem();
+  const store = createStore(storage);
+  store.createCourse('אסטרונומיה');
+  const drive = fakeDrive();
+  const base = drive.fetch;
+  drive.fetch = async (url, opts = {}) => {
+    if (opts.method === 'DELETE' && opts.headers?.Authorization === 'Bearer TOK') { drive.id = null; drive.file = null; drive.calls.push('DELETE'); return res(204); }
+    return base(url, opts);
+  };
+  const g = createGoogle({ native, store, storage, fetchImpl: drive.fetch, syncDelayMs: 1e9 });
+  await g.signIn();
+  assert.ok(drive.file);
+  await g.deleteRemote();
+  assert.equal(drive.file, null);
+  assert.ok(drive.calls.includes('DELETE'));
+  assert.equal(store.state.courses.length, 1);
+});

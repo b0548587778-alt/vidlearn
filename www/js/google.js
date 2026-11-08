@@ -1,7 +1,7 @@
 // חשבון Google: כניסה (דרך רכיב ה-native — Google Identity של אנדרואיד), טוקן גישה,
 // וסנכרון הנתונים בין מכשירים דרך Drive (sync.js). הכניסה גם מפעילה את יוטיוב בלי מפתח API.
 // הטוקן נשמר רק בזיכרון; בטלפון נשמרים רק השם והמייל להצגה.
-import { mergeSync, samePayload, driveFindUrl, driveDownloadUrl, driveCreateRequest, driveUploadUrl, parseDriveFind } from './sync.js';
+import { mergeSync, samePayload, driveFindUrl, driveFileUrl, driveDownloadUrl, driveCreateRequest, driveUploadUrl, parseDriveFind } from './sync.js';
 
 export const ACCOUNT_KEY = 'vidlearn:google';
 const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
@@ -150,6 +150,18 @@ export function createGoogle({ native, store, storage, fetchImpl = (...a) => fet
       const yt = store.state.settings.sources.find((s) => s.type === 'youtube');
       if (yt && !yt.enabled) store.updateSource(yt.id, { enabled: true });
       return account;
+    },
+
+    // מחיקת קובץ הסנכרון מה-Drive (הנתונים בטלפון נשארים)
+    async deleteRemote() {
+      if (!account || !native) throw new Error('not-signed-in');
+      clearTimeout(timer);
+      if (syncing) await syncing.catch(() => {});
+      let id;
+      while ((id = parseDriveFind(await readJson(await authFetch(driveFindUrl()))))) {
+        await authFetch(driveFileUrl(id), { method: 'DELETE' });
+      }
+      return true;
     },
 
     async signOut() {

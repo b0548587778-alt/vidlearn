@@ -119,6 +119,10 @@ export function driveFindUrl(name = SYNC_FILE) {
   return `${DRIVE}?${new URLSearchParams({ spaces: 'appDataFolder', q, fields: 'files(id,modifiedTime)', orderBy: 'modifiedTime desc', pageSize: '10' })}`;
 }
 
+export function driveFileUrl(id) {
+  return `${DRIVE}/${encodeURIComponent(id)}`;
+}
+
 export function driveDownloadUrl(id) {
   return `${DRIVE}/${encodeURIComponent(id)}?alt=media`;
 }
