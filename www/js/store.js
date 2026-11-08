@@ -38,6 +38,7 @@ export const DOWNLOAD_DEFAULTS = {
   dlLimitMB: 2000,        // תקרת נפח לכל הסרטונים השמורים
   dlAutoNext: true,       // בקורס — להוריד מראש את השיעור הבא
   dlDeleteLearned: false, // למחוק סרטון שמור כשמסמנים אותו כנלמד
+  dlPublicCopy: true,     // עותק כקובץ רגיל בתיקיית ההורדות של הטלפון (Download/VidLearn)
 };
 export const DL_STATUSES = ['queued', 'waiting', 'downloading', 'done', 'error'];
 
@@ -72,6 +73,7 @@ export function normalizeState(raw) {
       dlLimitMB: Number.isFinite(Number(s.dlLimitMB)) && Number(s.dlLimitMB) >= 100 ? Math.min(Math.round(Number(s.dlLimitMB)), 200000) : DOWNLOAD_DEFAULTS.dlLimitMB,
       dlAutoNext: s.dlAutoNext === undefined ? DOWNLOAD_DEFAULTS.dlAutoNext : !!s.dlAutoNext,
       dlDeleteLearned: !!s.dlDeleteLearned,
+      dlPublicCopy: s.dlPublicCopy === undefined ? DOWNLOAD_DEFAULTS.dlPublicCopy : !!s.dlPublicCopy,
       bookScanned: s.bookScanned === undefined ? true : !!s.bookScanned,
       readerFont: Number.isFinite(Number(s.readerFont)) ? Math.min(32, Math.max(14, Number(s.readerFont))) : 19,
       sleepMin: Number(s.sleepMin) || 0,

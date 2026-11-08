@@ -236,3 +236,49 @@ test('סקירה: 0 בתים = 0 KB', () => {
   assert.equal(formatBytes(0).replace(/[\u2066\u2069]/g, ''), '0 KB');
   assert.equal(formatBytes(42 * MB).replace(/[\u2066\u2069]/g, ''), '42 MB');
 });
+
+test('עותק כקובץ רגיל בתיקיית ההורדות של הטלפון: אחרי הורדה, נשאר אחרי מחיקה מהאפליקציה', async () => {
+  const { publicFileName } = await import('../www/js/downloads.js');
+  const store = createStore(mem());
+  const fs = fakeFs();
+  const exported = [];
+  fs.exportCopy = async (path, v) => { exported.push([path, v.id]); return `Download/VidLearn/${publicFileName(v, path)}`; };
+  const dl = createDownloads({ store, fs, network: fakeNet(), resolveUrl });
+  assert.equal(store.state.settings.dlPublicCopy, true, 'ברירת מחדל: פעיל');
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  const d = store.getDownload('archive:a');
+  assert.equal(d.status, 'done');
+  assert.match(d.publicPath, /^Download\/VidLearn\/a \[[0-9a-f]{6}\]\.mp4$/);
+  assert.equal(exported.length, 1);
+  await dl.remove('archive:a');
+  assert.equal(exported.length, 1, 'המחיקה מהאפליקציה לא נוגעת בעותק שבטלפון');
+});
+
+test('עותק בטלפון: כבוי בהגדרות ← לא נשמר; כשל ← ההורדה עדיין הצליחה; ייצוא ידני', async () => {
+  const store = createStore(mem());
+  store.setSetting('dlPublicCopy', false);
+  const fs = fakeFs();
+  let n = 0;
+  fs.exportCopy = async () => { n++; if (n === 1) throw new Error('denied'); return 'Download/VidLearn/x.mp4'; };
+  const dl = createDownloads({ store, fs, network: fakeNet(), resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(n, 0);
+  store.setSetting('dlPublicCopy', true);
+  dl.enqueue(arch('b'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:b').status, 'done', 'כשל בעותק לא מפיל את ההורדה');
+  assert.ok(!store.getDownload('archive:b').publicPath);
+  assert.equal(await dl.exportToDevice('archive:b'), 'Download/VidLearn/x.mp4');
+  assert.equal(store.getDownload('archive:b').publicPath, 'Download/VidLearn/x.mp4');
+  await assert.rejects(dl.exportToDevice('archive:none'));
+});
+
+test('שם קריא לקובץ בטלפון: בלי תווים אסורים, פרק עם שם הספר ומספר', async () => {
+  const { publicFileName } = await import('../www/js/downloads.js');
+  assert.match(publicFileName({ id: 'x', title: 'שיעור: "אלגברה"/1?' }, 'videos/archive-1.mp4'), /^שיעור אלגברה 1 \[[0-9a-f]{6}\]\.mp4$/);
+  assert.match(publicFileName({ id: 'b#3', kind: 'chapter', index: 2, title: 'Chapter 3' }, 'videos/audio-1.mp3', 'Pride and Prejudice'), /^Pride and Prejudice - 03 Chapter 3 \[[0-9a-f]{6}\]\.mp3$/);
+  assert.match(publicFileName({ id: 'y', title: '' }, 'videos/book-1.txt'), /^VidLearn \[[0-9a-f]{6}\]\.txt$/);
+  assert.notEqual(publicFileName({ id: 'a', title: 'T' }, 'x.mp4'), publicFileName({ id: 'b', title: 'T' }, 'x.mp4'), 'אותו שם — קבצים שונים');
+});

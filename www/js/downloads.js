@@ -1,6 +1,7 @@
 // שמירת סרטונים בטלפון לצפייה בלי אינטרנט.
 // התור עובד אחד-אחד. הקבצים, הרשת והכתובת הישירה — דרך מתאמים, כדי שאפשר לבדוק בלי טלפון.
-//   fs:      { download(url, path, onProgress) → { uri }, stat(path) → size, remove(path), toSrc(uri) → src }
+//   fs:      { download(url, path, onProgress) → { uri }, stat(path) → size, remove(path), toSrc(uri) → src,
+//              exportCopy(path, video) → המיקום בתיקייה הציבורית (לא חובה) }
 //   network: { status() → { connected, type }, onChange(fn) }
 //   resolveUrl(video, quality) → { url, size } (size משוער, 0 = לא ידוע) או כתובת בלבד
 import { canDownload } from './sources.js';
@@ -28,6 +29,17 @@ export function fileNameFor(v, url) {
   // תחילית קריאה (סוג המקור) + גיבוב של המזהה המלא — שני סרטונים לא יקבלו אותו קובץ
   const prefix = String(v.sourceType || 'video').replace(/[^\w-]+/g, '_').slice(0, 20);
   return `videos/${prefix}-${hashId(String(v.id))}.${ext}`;
+}
+
+// שם קריא לעותק בתיקיית ההורדות של הטלפון: "שם הספר - 03 שם הפרק [a1b2c3].mp3".
+// הגיבוב הקצר — שני פריטים עם אותו שם לא ידרסו זה את זה
+export function publicFileName(v, path, bookTitle = '') {
+  const ext = (String(path || '').match(/\.([a-z0-9]{2,4})$/i) || [null, 'mp4'])[1].toLowerCase();
+  const base = v.kind === 'chapter' && bookTitle
+    ? `${bookTitle} - ${String((Number(v.index) || 0) + 1).padStart(2, '0')} ${v.title || ''}`
+    : String(v.title || '');
+  const clean = base.replace(/[\\/:*?"<>|\u0000-\u001f\u200e\u200f\u2066-\u2069]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100).trim() || 'VidLearn';
+  return `${clean} [${hashId(String(v.id)).slice(0, 6)}].${ext}`;
 }
 
 export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () => {} }) {
@@ -118,6 +130,8 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
             store.setDownload(id, { status: 'error', error: 'limit' });
           } else {
             store.setDownload(id, { status: 'done', path, uri, size, quality, at: Date.now() });
+            // עותק בתיקיית ההורדות של הטלפון (קובץ רגיל: נראה בקבצים, בנגן המוזיקה ובגלריה). כשל — לא מפיל
+            if (settings().dlPublicCopy !== false) await exportToDevice(id).catch(() => {});
           }
         } catch (e) {
           if (path) await fs.remove(path).catch(() => {});
@@ -136,6 +150,16 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
       running = false;
     }
     if (rerun) pump();
+  }
+
+  // עותק בתיקייה הציבורית (Download/VidLearn) ← המיקום; נשאר גם אחרי מחיקה מהאפליקציה
+  async function exportToDevice(id) {
+    const d = store.getDownload(id);
+    if (!fs?.exportCopy || !d || d.status !== 'done' || !d.path) throw new Error('not-saved');
+    const publicPath = await fs.exportCopy(d.path, d.video);
+    if (store.getDownload(id)) store.setDownload(id, { publicPath: String(publicPath || '') });
+    notify();
+    return publicPath;
   }
 
   async function remove(id) {
@@ -190,7 +214,8 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
 
   return {
     available: !!fs,
-    enqueue, remove, retry, pump, localSrc, prefetchNext, saveCourse, onLearned, usedBytes, isSaved, limitBytes,
+    canExport: !!fs?.exportCopy,
+    enqueue, remove, retry, pump, exportToDevice, localSrc, prefetchNext, saveCourse, onLearned, usedBytes, isSaved, limitBytes,
     progressOf: (id) => progress.get(id) ?? null,
     get currentId() { return currentId; },
     list: () => all().sort((a, b) => b.at - a.at),

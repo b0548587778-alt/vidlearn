@@ -4,7 +4,7 @@ import { searchAll, resolveDirect, resolveDirectFile, searchMedia, fetchArchiveM
 import { isHebrewQuery, articleBlocks } from './wiki.js';
 import { itemHash, parseAudioChapters, pickBookText, cleanBookText, paginate, textDir } from './media.js';
 import { SOURCE_TYPES, sourceReady, canDownload } from './sources.js';
-import { createDownloads, formatBytes } from './downloads.js';
+import { createDownloads, formatBytes, publicFileName } from './downloads.js';
 import { parseWordList } from './filter.js';
 import { t as makeT, SUBJECTS } from './i18n.js';
 import { formatDuration, truncate, safeUrl } from './util.js';
@@ -54,6 +54,8 @@ function toast(msg) {
 const cap = window.Capacitor;
 const FS = cap?.isNativePlatform?.() ? cap?.Plugins?.Filesystem : null;
 const NET = cap?.isNativePlatform?.() ? cap?.Plugins?.Network : null;
+const NATIVE = cap?.isNativePlatform?.() ? cap?.Plugins?.VidLearnNative : null; // native/vidlearn-native
+const PUBLIC_DIR = 'Download/VidLearn';
 const fsAdapter = FS ? {
   async download(url, path, onProgress) {
     const handle = await FS.addListener('progress', (p) => {
@@ -70,7 +72,37 @@ const fsAdapter = FS ? {
   async stat(path) { return Number((await FS.stat({ path, directory: 'DATA' })).size) || 0; },
   async remove(path) { await FS.deleteFile({ path, directory: 'DATA' }); },
   toSrc: (uri) => cap.convertFileSrc(uri),
+  // עותק כקובץ רגיל בתיקיית ההורדות של הטלפון; לפרק — עם שם הספר / הפודקאסט
+  async exportCopy(path, v) {
+    const book = v.bookId ? findVideo(v.bookId) : null;
+    const to = `${PUBLIC_DIR}/${publicFileName(v, path, book?.title || '')}`;
+    await FS.mkdir({ path: PUBLIC_DIR, directory: 'EXTERNAL_STORAGE', recursive: true }).catch(() => {});
+    const r = await FS.copy({ from: path, directory: 'DATA', to, toDirectory: 'EXTERNAL_STORAGE' });
+    if (NATIVE && r?.uri) await NATIVE.scanFile({ path: r.uri }).catch(() => {}); // נראה בנגן המוזיקה ובגלריה
+    return to;
+  },
 } : null;
+
+// ---------- ניגון ברקע (אנדרואיד) ----------
+// בזמן ניגון רץ שירות קדמה עם התראה, כדי שאנדרואיד לא יעצור את הניגון כשהמסך כבוי.
+// עצירה מושהית: בסוף פרק עוברים לבא תוך רגע — לא עוצרים ומפעילים מחדש (מהרקע אסור להפעיל)
+let bgOn = false;
+let bgStopTimer = 0;
+function bgPlaying(on, title = '', text = '') {
+  if (!NATIVE) return;
+  clearTimeout(bgStopTimer);
+  if (on) {
+    if (!bgOn) { bgOn = true; NATIVE.start({ title, text }).catch(() => { bgOn = false; }); }
+  } else if (bgOn) {
+    bgStopTimer = setTimeout(() => { bgOn = false; NATIVE.stop().catch(() => {}); }, 4000);
+  }
+}
+// נגן שמע / וידאו ← ניגון ברקע כל עוד הוא מנגן
+function keepPlayingInBackground(el, describe) {
+  el.addEventListener('play', () => { const [t, s] = describe(); bgPlaying(true, t, s); });
+  el.addEventListener('pause', () => bgPlaying(false));
+  el.addEventListener('ended', () => bgPlaying(false));
+}
 const netAdapter = NET ? {
   async status() { const s = await NET.getStatus(); return { connected: s.connected, type: s.connectionType }; },
   onChange(fn) { NET.addListener('networkStatusChange', fn); },
@@ -530,13 +562,20 @@ function renderDownloads() {
       list.length ? h('div', { class: 'panel' }, list.map((d) => {
         const v = remember(d.video);
         const l = dlLabel(v.id);
-        const label = h('span', { class: 'muted small' }, l.state === 'done' ? [formatBytes(d.size), formatDuration(v.duration), v.sourceName].filter(Boolean).join(' · ') : l.text);
+        const label = h('span', { class: 'muted small' }, l.state === 'done' ? [formatBytes(d.size), formatDuration(v.duration), v.sourceName, d.publicPath ? `📂 ${d.publicPath.split('/').slice(0, -1).join('/')}` : ''].filter(Boolean).join(' · ') : l.text);
         labels.set(v.id, label);
         return h('div', { class: 'lesson' },
           h('span', { class: `num${l.state === 'done' ? ' ok' : l.state === 'error' ? '' : ' cur'}` }, l.state === 'done' ? '✓' : l.state === 'error' ? '!' : '⬇'),
           h('div', { class: 'info', onclick: () => go(watchHash(v)) }, h('b', {}, v.title), label),
           h('div', { class: 'tools' },
             l.state === 'error' ? h('button', { type: 'button', 'aria-label': tr('dlFailed'), title: tr('dlFailed'), onclick: () => downloads.retry(v.id) }, '↻') : null,
+            // עותק בתיקיית ההורדות של הטלפון (לקובץ ששמרנו לפני שהאפשרות הייתה, או אחרי שנמחק משם)
+            l.state === 'done' && downloads.canExport ? h('button', {
+              type: 'button', 'aria-label': tr('dlExport'), title: tr('dlExport'),
+              onclick: async () => {
+                try { const p = await downloads.exportToDevice(v.id); toast(tr('dlExported', p)); shape = ''; draw(); } catch { toast(tr('dlExportFailed')); }
+              },
+            }, '📂') : null,
             h('button', { type: 'button', 'aria-label': tr('dlRemove'), title: tr('dlRemove'), onclick: () => confirmDialog(tr('dlConfirmRemove'), () => downloads.remove(v.id)) }, '🗑')));
       })) : h('p', { class: 'muted' }, tr('noDownloads')),
     );
@@ -599,6 +638,7 @@ function renderWatch(id, params) {
     offlineNote.hidden = !local;
     embedNote.hidden = true;
     videoEl = h('video', { src: url, controls: true, playsinline: true, preload: 'metadata' });
+    keepPlayingInBackground(videoEl, () => [v.title, v.sourceName || '']);
     const p = store.getProgress(v.id);
     videoEl.addEventListener('loadedmetadata', () => {
       if (p?.pos && !p.done && p.pos < videoEl.duration - 10) videoEl.currentTime = p.pos;
@@ -817,6 +857,7 @@ function renderListen(id, params) {
     if (now - lastSaved > 5000) { lastSaved = now; saveChapterPos(); }
   });
   audio.addEventListener('pause', saveChapterPos);
+  keepPlayingInBackground(audio, () => [book.title, chapterOf()?.title || '']);
   audio.addEventListener('ended', () => {
     const c = chapterOf();
     if (c) store.setDone(c.id, true);
@@ -1167,6 +1208,8 @@ function renderSettings(params = new URLSearchParams()) {
   });
   const dlNext = h('input', { type: 'checkbox', class: 'switch', id: 'dlNext', checked: s.dlAutoNext });
   dlNext.addEventListener('change', () => store.setSetting('dlAutoNext', dlNext.checked));
+  const dlPub = h('input', { type: 'checkbox', class: 'switch', id: 'dlPub', checked: s.dlPublicCopy !== false });
+  dlPub.addEventListener('change', () => store.setSetting('dlPublicCopy', dlPub.checked));
   const dlDel = h('input', { type: 'checkbox', class: 'switch', id: 'dlDel', checked: s.dlDeleteLearned });
   dlDel.addEventListener('change', () => store.setSetting('dlDeleteLearned', dlDel.checked));
 
@@ -1206,6 +1249,7 @@ function renderSettings(params = new URLSearchParams()) {
       h('label', { class: 'field', for: 'dlQuality' }, tr('dlQuality'), dlQ),
       h('label', { class: 'field', for: 'dlLimit' }, tr('dlLimitMB'), dlLimit),
       h('label', { class: 'check', for: 'dlNext' }, dlNext, tr('dlAutoNext')),
+      h('label', { class: 'check', for: 'dlPub' }, dlPub, tr('dlPublicCopy')),
       h('label', { class: 'check', for: 'dlDel' }, dlDel, tr('dlDeleteLearned'))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('backup')), backupText,
       h('div', { class: 'row', style: 'margin-top:8px' },
