@@ -26,7 +26,7 @@ export const SOURCE_TYPES = {
     eduFilter: 'keywords',
   },
   youtube: {
-    label: { he: 'יוטיוב (דורש מפתח API)', en: 'YouTube (API key required)' },
+    label: { he: 'יוטיוב (כניסה עם Google או מפתח API)', en: 'YouTube (Google sign-in or API key)' },
     needsKey: true,
     eduFilter: 'category',
   },
@@ -49,9 +49,10 @@ export function needsKeywordFilter(source) {
   return SOURCE_TYPES[source.type]?.eduFilter === 'keywords';
 }
 
-export function sourceReady(source) {
+// ctx.google: מחוברים עם חשבון Google — יוטיוב עובד עם הכניסה, בלי מפתח API
+export function sourceReady(source, ctx = {}) {
   if (!source.enabled || !SOURCE_TYPES[source.type]) return false;
-  if (SOURCE_TYPES[source.type].needsKey && !String(source.key || '').trim()) return false;
+  if (SOURCE_TYPES[source.type].needsKey && !String(source.key || '').trim() && !(source.type === 'youtube' && ctx?.google)) return false;
   return true;
 }
 

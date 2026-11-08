@@ -70,6 +70,10 @@ jobs:
             echo "SIGNING_ARGS=-Pandroid.injected.signing.store.file=$RUNNER_TEMP/vidlearn.keystore -Pandroid.injected.signing.store.password=android -Pandroid.injected.signing.key.alias=androiddebugkey -Pandroid.injected.signing.key.password=android" >> "$GITHUB_ENV"
             echo "KEY_SHA256=$(keytool -list -v -keystore "$RUNNER_TEMP/vidlearn.keystore" -storepass android -alias androiddebugkey | grep -m1 'SHA256:' | awk '{print $2}')" >> "$GITHUB_ENV"
             echo "signing with the fixed key"
+            # לכניסה עם Google: לקוח OAuth מסוג Android ב-Google Cloud צריך את טביעת ה-SHA-1 הזו
+            SHA1=$(keytool -list -v -keystore "$RUNNER_TEMP/vidlearn.keystore" -storepass android -alias androiddebugkey | grep -m1 'SHA1:' | awk '{print $2}')
+            echo "Google sign-in — Android OAuth client: package com.vidlearn.app, SHA-1 $SHA1"
+            echo "**Google sign-in (Android OAuth client):** package \`com.vidlearn.app\`, SHA-1 \`$SHA1\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::SIGNING_KEYSTORE_B64 is not set — this APK is signed with a one-off key and cannot update an installed copy"
           fi

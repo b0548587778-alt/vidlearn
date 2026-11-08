@@ -38,8 +38,21 @@ const altEligible = (s) => s.type !== 'youtube';
 // cursors: { [taskId]: cursor } — לעמוד הבא; משימה שסיימה (null) מדולגת.
 // alt: המונח באנגלית (מחרוזת או Promise שלה)
 // altOnly: רק החיפוש הנוסף (הממשק מציג קודם את תוצאות העברית ומוסיף את האנגלית כשהן מגיעות)
-export async function searchAll(query, settings, { cursors = null, alt = null, altOnly = false, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
-  const ready = settings.sources.filter(sourceReady);
+// youtubeAuth: ({ refresh }) => טוקן גישה של Google (כשמחוברים) — יוטיוב בלי מפתח API.
+// 401 (טוקן שפג) ← טוקן חדש וניסיון אחד נוסף
+export async function searchAll(query, settings, { cursors = null, alt = null, altOnly = false, fetchImpl = fetch, timeoutMs = TIMEOUT_MS, youtubeAuth = null } = {}) {
+  const ready = settings.sources.filter((s) => sourceReady(s, { google: !!youtubeAuth }));
+  // יוטיוב בלי מפתח ← עם הכניסה ל-Google
+  const ytGet = async (s, url) => {
+    if (String(s.key || '').trim() || !youtubeAuth) return getJson(url, fetchImpl, timeoutMs);
+    const call = async (refresh) => getJson(url, fetchImpl, timeoutMs, { headers: { Authorization: `Bearer ${await youtubeAuth({ refresh })}` } });
+    try {
+      return await call(false);
+    } catch (e) {
+      if (e?.message !== 'http-401') throw e;
+      return call(true);
+    }
+  };
   const tasks = [
     ...(altOnly ? [] : ready.map((s) => ({ id: s.id, source: s, alt: false }))),
     ...(alt ? ready.filter(altEligible).map((s) => ({ id: s.id + ALT_SUFFIX, source: s, alt: true })) : []),
@@ -55,12 +68,12 @@ export async function searchAll(query, settings, { cursors = null, alt = null, a
     }
     const cursor = cursors && t.id in cursors ? cursors[t.id] : 0;
     const url = buildSearchUrl(s, q, { cursor, langs: settings.contentLangs || [] });
-    const json = await getJson(url, fetchImpl, timeoutMs);
+    const json = s.type === 'youtube' ? await ytGet(s, url) : await getJson(url, fetchImpl, timeoutMs);
     const { items, next } = parseResults(s, json, cursor);
     if (s.type === 'youtube' && items.length) {
       // משכים — לסינון לפי אורך ולתצוגה; כשל לא מפיל את התוצאות
       try {
-        const durs = parseYoutubeDurations(await getJson(buildYoutubeDetailsUrl(s, items.map((v) => v.nativeId)), fetchImpl, timeoutMs));
+        const durs = parseYoutubeDurations(await ytGet(s, buildYoutubeDetailsUrl(s, items.map((v) => v.nativeId))));
         items.forEach((v) => { if (durs[v.nativeId]) v.duration = durs[v.nativeId]; });
       } catch { /* בלי משך */ }
     }

@@ -39,3 +39,29 @@ test('סקירה: יוטיוב מקבל משך מבקשה נוספת', async () 
   const r = await searchAll('physics', settings, { fetchImpl });
   assert.equal(r.items[0].duration, 3723);
 });
+
+test('יוטיוב עם חשבון Google: בלי מפתח, טוקן בכותרת, וטוקן שפג (401) מתחדש פעם אחת', async () => {
+  const settings = defaultState().settings;
+  settings.sources = settings.sources.map((s) => (s.id === 'youtube' ? { ...s, enabled: true, key: '' } : { ...s, enabled: false }));
+  // בלי חשבון — יוטיוב בלי מפתח לא נשאל
+  assert.equal((await searchAll('physics', settings, { fetchImpl: async () => { throw new Error('no'); } })).searched, 0);
+
+  const seen = [];
+  let tokenN = 0;
+  const youtubeAuth = async ({ refresh }) => { if (refresh) tokenN++; return `T${tokenN}`; };
+  const fetchImpl = async (url, opts) => {
+    seen.push({ url, auth: opts.headers.Authorization });
+    if (opts.headers.Authorization === 'Bearer T0') return { ok: false, status: 401, json: async () => ({}) };
+    return {
+      ok: true,
+      json: async () => (url.includes('/videos?')
+        ? { items: [{ id: 'abcdefghijk', contentDetails: { duration: 'PT10M' } }] }
+        : { items: [{ id: { videoId: 'abcdefghijk' }, snippet: { title: 'Physics lecture' } }] }),
+    };
+  };
+  const r = await searchAll('physics', settings, { fetchImpl, youtubeAuth });
+  assert.equal(r.searched, 1);
+  assert.equal(r.items[0].duration, 600);
+  assert.ok(seen.every((x) => !/[?&]key=/.test(x.url)), 'בלי key בכתובת');
+  assert.deepEqual(seen.map((x) => x.auth), ['Bearer T0', 'Bearer T1', 'Bearer T1']);
+});
