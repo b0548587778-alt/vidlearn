@@ -1,6 +1,7 @@
 // ממשק האפליקציה. כל טקסט שמגיע מהרשת נכנס דרך textContent (h()) — אין innerHTML עם נתונים חיצוניים.
 import { createStore, courseProgress, continueWatching } from './store.js';
-import { searchAll, resolveDirect } from './search.js';
+import { searchAll, resolveDirect, resolveDirectFile, searchMedia, fetchArchiveMetadata, fetchText } from './search.js';
+import { itemHash, parseAudioChapters, pickBookText, cleanBookText, paginate, textDir } from './media.js';
 import { SOURCE_TYPES, sourceReady, canDownload } from './sources.js';
 import { createDownloads, formatBytes } from './downloads.js';
 import { parseWordList } from './filter.js';
@@ -80,7 +81,7 @@ const downloads = createDownloads({
   store,
   fs: fsAdapter,
   network: netAdapter,
-  resolveUrl: (v, quality) => resolveDirect(v, { quality }),
+  resolveUrl: (v, quality) => resolveDirectFile(v, { quality }),
   onUpdate: () => {
     if (dlFrame) return;
     dlFrame = requestAnimationFrame(() => { dlFrame = 0; dlWatchers.forEach((fn) => fn()); });
@@ -139,12 +140,15 @@ function findVideo(id) {
   const s = store.state;
   const v = s.favorites.find((x) => x.id === id)
     || s.history.find((x) => x.video.id === id)?.video
-    || s.courses.flatMap((c) => c.lessons).find((x) => x.id === id);
+    || s.courses.flatMap((c) => c.lessons).find((x) => x.id === id)
+    || s.downloads[id]?.video;
   return v ? remember(v) : null;
 }
 
 function go(hash) { location.hash = hash; }
-function watchHash(v, courseId) { return `#/watch/${encodeURIComponent(v.id)}${courseId ? `?course=${encodeURIComponent(courseId)}` : ''}`; }
+// כל פריט נפתח במסך שלו: סרטון ← נגן, ספר שמע ← השמעה, ספר ← קורא
+const watchHash = itemHash;
+const KIND_ICON = { audiobook: '🎧', book: '📖', chapter: '🎧' };
 
 // ---------- כרטיס סרטון ----------
 function videoCard(v, { courseId } = {}) {
@@ -163,14 +167,33 @@ function videoCard(v, { courseId } = {}) {
     h('div', { class: 'meta' },
       h('span', { class: 'title' }, v.title),
       v.author ? h('span', { class: 'muted small' }, truncate(v.author, 60)) : null,
-      h('span', {}, h('span', { class: 'badge' }, v.sourceName || v.sourceType)),
+      h('span', {}, KIND_ICON[v.kind] ? h('span', { class: 'badge' }, KIND_ICON[v.kind]) : null, ' ', h('span', { class: 'badge' }, v.sourceName || v.sourceType)),
     ),
   );
 }
 
-function searchBar(initial = '') {
-  const input = h('input', { type: 'search', value: initial, placeholder: tr('searchPlaceholder'), 'aria-label': tr('search'), enterkeyhint: 'search' });
-  const submit = () => { const q = input.value.trim(); if (q) go(`#/search?q=${encodeURIComponent(q)}`); };
+const TYPES = [['video', '🎬', 'videos'], ['audiobook', '🎧', 'audiobooks'], ['book', '📖', 'books']];
+let homeType = 'video'; // סוג התוכן שנבחר במסך הבית
+
+function searchHash(q, type) {
+  return `#/search?q=${encodeURIComponent(q)}${type && type !== 'video' ? `&type=${type}` : ''}`;
+}
+
+// מתג סוג התוכן: סרטונים / ספרי שמע / ספרים
+function typeTabs(current, onPick) {
+  return h('div', { class: 'tabs type-tabs', role: 'tablist' }, TYPES.map(([k, icon, label]) =>
+    h('button', { class: 'btn btn-sm', type: 'button', role: 'tab', 'aria-pressed': String(current === k), onclick: () => onPick(k) }, `${icon} ${tr(label)}`)));
+}
+
+// מילות חיפוש של תחום ← לספרים (בלי "שיעור" / "הרצאה")
+function subjectQuery(sub, type) {
+  return type === 'video' ? sub.q : sub.q.replace(/\b(lesson|lecture|course|tutorial)\b/g, '').trim();
+}
+
+function searchBar(initial = '', type = 'video') {
+  const placeholder = type === 'audiobook' ? tr('searchAudio') : type === 'book' ? tr('searchBooks') : tr('searchPlaceholder');
+  const input = h('input', { type: 'search', value: initial, placeholder, 'aria-label': tr('search'), enterkeyhint: 'search' });
+  const submit = () => { const q = input.value.trim(); if (q) go(searchHash(q, type)); };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   return h('div', { class: 'searchbar' }, input, h('button', { class: 'btn btn-primary', type: 'button', onclick: submit }, tr('searchBtn')));
 }
@@ -181,12 +204,13 @@ function renderHome() {
   const cont = continueWatching(s).map(remember);
   const courses = s.courses.slice(0, 6);
   return [
-    h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')), searchBar()),
-    cont.length ? [h('h2', {}, tr('continueWatching')), h('div', { class: 'hscroll' }, cont.map((v) => videoCard(v)))] : null,
+    h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')),
+      typeTabs(homeType, (k) => { homeType = k; route(); }), searchBar('', homeType)),
+    cont.length ? [h('h2', {}, tr('continueLearning')), h('div', { class: 'hscroll' }, cont.map((v) => videoCard(v)))] : null,
     courses.length ? [h('h2', {}, tr('myCourses')), h('div', { class: 'hscroll' }, courses.map(courseCard))] : null,
     h('h2', {}, tr('subjects')),
     h('div', { class: 'subjects' }, SUBJECTS.map((sub) =>
-      h('button', { class: 'subject', type: 'button', onclick: () => go(`#/search?q=${encodeURIComponent(sub.q)}&subject=${sub.id}`) },
+      h('button', { class: 'subject', type: 'button', onclick: () => go(`${searchHash(subjectQuery(sub, homeType), homeType)}&subject=${sub.id}`) },
         h('span', { class: 'ic', 'aria-hidden': 'true' }, sub.icon), sub[store.state.settings.lang] || sub.he))),
   ];
 }
@@ -204,8 +228,10 @@ function courseCard(c) {
 
 function renderSearch(params) {
   const q = (params.get('q') || '').trim();
+  const type = TYPES.some(([k]) => k === params.get('type')) ? params.get('type') : 'video';
   const wrap = h('div', {});
-  wrap.append(searchBar(q));
+  wrap.append(typeTabs(type, (k) => go(q ? searchHash(q, k) : `#/search${k === 'video' ? '' : `?type=${k}`}`)), searchBar(q, type));
+  if (type !== 'video') return renderMediaResults(type, q, wrap);
   if (!q) {
     wrap.append(h('p', { class: 'muted center' }, tr('tagline')));
     return wrap;
@@ -287,6 +313,57 @@ function renderSearch(params) {
       lastSearch = { q, ...r, items: r.items.map(remember) };
       draw();
     });
+  }
+  return wrap;
+}
+
+// תוצאות ספרי שמע / ספרים (מטמון לפי סוג ושאילתה — חזרה מהספר לא מחפשת שוב)
+let lastMedia = null;
+function renderMediaResults(type, q, wrap) {
+  wrap.append(h('p', { class: 'muted small' }, tr(type === 'audiobook' ? 'audioHint' : 'bookHint')));
+  if (!q) return wrap;
+  const results = h('div', {});
+  const status = h('div', {});
+  const more = h('div', { class: 'center' });
+  wrap.append(status, results, more);
+  const draw = () => {
+    const st = lastMedia;
+    fill(status, st.filtered ? h('p', { class: 'muted small' }, tr('filteredInfo', st.filtered)) : null,
+      st.error ? h('div', { class: 'notice warn small' }, tr('bookFailed')) : null);
+    fill(results, st.items.length ? h('div', { class: 'cards' }, st.items.map((v) => videoCard(v))) : st.error ? null : h('p', { class: 'center muted' }, tr('noResults')));
+    fill(more, st.next !== null && !st.loading ? h('button', { class: 'btn', type: 'button', onclick: load }, tr('loadMore')) : st.loading ? h('div', { class: 'spinner' }) : null);
+  };
+  async function load() {
+    const st = lastMedia;
+    if (!st.loading) {
+      st.loading = (async () => {
+        try {
+          const r = await searchMedia(type, q, store.state.settings, { page: st.page });
+          const ids = new Set(st.items.map((v) => v.id));
+          st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
+          st.filtered += r.filtered;
+          st.next = r.next;
+          st.page = r.next ?? st.page;
+          st.error = false;
+        } catch {
+          st.error = true;
+          st.next = st.items.length ? st.next : null;
+        } finally {
+          st.loading = null;
+        }
+      })();
+    }
+    draw();
+    await st.loading;
+    if (lastMedia === st && results.isConnected) draw();
+  }
+  if (!lastMedia || lastMedia.type !== type || lastMedia.q !== q) {
+    lastMedia = { type, q, items: [], page: 0, next: 0, filtered: 0, error: false, loading: null };
+    load();
+  } else if (lastMedia.loading) {
+    load();
+  } else {
+    draw();
   }
   return wrap;
 }
@@ -537,6 +614,332 @@ function renderWatch(id, params) {
   ];
 }
 
+// ---------- ספר שמע ----------
+function mediaHead(book) {
+  const thumb = safeUrl(book.thumb);
+  return h('div', { class: 'media-head' },
+    thumb ? h('img', { src: thumb, alt: '', referrerpolicy: 'no-referrer' }) : null,
+    h('div', {},
+      h('h1', { class: 'watch-title' }, book.title),
+      h('p', { class: 'muted small' }, [book.author && `${tr('by')} ${book.author}`, book.sourceName, formatDuration(book.duration)].filter(Boolean).join(' · '))));
+}
+
+// כפתורי פעולה משותפים לספר שמע ולספר: מועדף, קורס, סימון נלמד, אתר המקור
+function mediaActions(book, onDoneChange) {
+  const row = h('div', { class: 'row', style: 'margin-top:10px' });
+  const draw = () => {
+    const fav = store.isFavorite(book.id);
+    const done = !!store.getProgress(book.id)?.done;
+    const page = safeUrl(book.pageUrl);
+    fill(row,
+      h('button', { class: 'btn btn-sm', type: 'button', 'aria-pressed': String(done), onclick: () => { setLearned(book.id, !done); draw(); onDoneChange?.(); } }, done ? '✓ ' + tr('done') : tr('markDone')),
+      h('button', { class: 'btn btn-sm', type: 'button', onclick: () => addToCourseDialog(book) }, '＋ ' + tr('addToCourse')),
+      h('button', { class: 'btn btn-sm', type: 'button', 'aria-pressed': String(fav), onclick: () => { store.toggleFavorite(book); draw(); } }, fav ? '★ ' + tr('unfavorite') : '☆ ' + tr('favorite')),
+      page ? h('a', { class: 'btn btn-sm', href: page, target: '_blank', rel: 'noopener noreferrer' }, '↗ ' + tr('openSource')) : null);
+  };
+  draw();
+  return row;
+}
+
+function renderListen(id, params) {
+  const book = findVideo(id);
+  if (!book) return h('p', { class: 'center muted' }, '—');
+  store.addHistory(book);
+  const startCh = params.has('ch') ? Number(params.get('ch')) : null;
+
+  const audio = h('audio', { controls: true, preload: 'metadata', class: 'audio' });
+  const nowTitle = h('b', {});
+  const offlineNote = h('div', { class: 'notice small', hidden: true }, tr('listenOffline'));
+  const chapterDl = h('span', {});
+  const controls = h('div', { class: 'row', style: 'margin-top:8px' });
+  const listBox = h('div', { class: 'panel' });
+  const notesBox = h('div', { class: 'panel' });
+  const body = h('div', {}, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('loadingBook')));
+  let chapters = store.getChapters(book.id);
+  let cur = -1;
+  let lastSaved = 0;
+  let sleepTimer = null;
+  let sleepEnd = false;
+  let disposed = false;
+
+  const chapterOf = () => chapters[cur];
+  function saveChapterPos() {
+    const c = chapterOf();
+    if (c && audio.duration) store.setPosition(c.id, audio.currentTime, audio.duration);
+  }
+  // התקדמות הספר כולו: הפרק הנוכחי מתוך כולם; נלמד כשכל הפרקים נלמדו
+  function updateBook() {
+    const doneCount = chapters.filter((c) => store.getProgress(c.id)?.done).length;
+    const all = chapters.length > 0 && doneCount === chapters.length;
+    const was = !!store.getProgress(book.id)?.done;
+    store.setProgress(book.id, { pos: cur + 1, dur: chapters.length, done: was || all });
+  }
+
+  function play(i, { autoplay = true } = {}) {
+    if (!chapters[i]) return;
+    saveChapterPos();
+    cur = i;
+    const c = chapters[i];
+    const local = downloads.localSrc(c.id);
+    offlineNote.hidden = !local;
+    audio.src = local || c.play.url;
+    audio.dataset.local = local ? '1' : '';
+    const p = store.getProgress(c.id);
+    audio.onloadedmetadata = () => { if (p?.pos && !p.done && p.pos < audio.duration - 5) audio.currentTime = p.pos; };
+    if (autoplay) audio.play().catch(() => {});
+    nowTitle.textContent = `${tr('chapter')} ${i + 1}/${chapters.length} — ${c.title}`;
+    fill(chapterDl, downloadButton(c));
+    updateBook();
+    drawList();
+    drawNotes();
+  }
+
+  audio.addEventListener('timeupdate', () => {
+    const now = Date.now();
+    if (now - lastSaved > 5000) { lastSaved = now; saveChapterPos(); }
+  });
+  audio.addEventListener('pause', saveChapterPos);
+  audio.addEventListener('ended', () => {
+    const c = chapterOf();
+    if (c) store.setDone(c.id, true);
+    updateBook();
+    if (sleepEnd) { sleepEnd = false; drawList(); return; } // טיימר "סוף הפרק"
+    if (cur + 1 < chapters.length) play(cur + 1); else drawList();
+  });
+  // קובץ שמור שנפגע ← מהרשת
+  audio.addEventListener('error', () => {
+    const c = chapterOf();
+    if (audio.dataset.local && c) { audio.dataset.local = ''; offlineNote.hidden = true; audio.src = c.play.url; audio.play().catch(() => {}); }
+  });
+
+  function setSleep(val) {
+    clearTimeout(sleepTimer);
+    sleepTimer = null;
+    sleepEnd = val === 'end';
+    if (val === 'end') toast(tr('sleepEndSet'));
+    else if (Number(val) > 0) {
+      sleepTimer = setTimeout(() => audio.pause(), Number(val) * 60000);
+      toast(tr('sleepSet', val));
+    }
+  }
+  const sleepSel = h('select', { class: 'input', 'aria-label': tr('sleepTimer'), style: 'width:auto' },
+    h('option', { value: '0' }, `🌙 ${tr('sleepTimer')}: ${tr('sleepOff')}`),
+    ['15', '30', '60'].map((m) => h('option', { value: m }, `🌙 ${m} ${tr('min')}`)),
+    h('option', { value: 'end' }, `🌙 ${tr('sleepEnd')}`));
+  sleepSel.addEventListener('change', () => setSleep(sleepSel.value));
+  fill(controls,
+    h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { audio.currentTime = Math.max(0, audio.currentTime - 30); } }, tr('back30')),
+    h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 30); } }, tr('fwd30')),
+    [0.75, 1, 1.25, 1.5, 2].map((r) => h('button', {
+      class: 'btn btn-sm', type: 'button', 'aria-pressed': String(r === 1),
+      onclick: (e) => { audio.playbackRate = r; controls.querySelectorAll('[data-rate]').forEach((b) => b.setAttribute('aria-pressed', String(b === e.currentTarget))); },
+      'data-rate': r,
+    }, `${r}×`)),
+    sleepSel);
+
+  function drawList() {
+    if (!chapters) return;
+    fill(listBox, h('h2', { style: 'margin-top:0' }, `${tr('chapters')} (${chapters.length})`),
+      chapters.map((c, i) => {
+        const p = store.getProgress(c.id);
+        const isCur = i === cur;
+        return h('div', { class: 'lesson' },
+          h('span', { class: `num${p?.done ? ' ok' : isCur ? ' cur' : ''}` }, p?.done ? '✓' : String(i + 1)),
+          h('div', { class: 'info', onclick: () => play(i) },
+            h('b', {}, (isCur ? '▶ ' : '') + c.title),
+            h('span', { class: 'muted small' }, [downloads.isSaved(c.id) ? '⬇' : '', formatDuration(c.duration), p && !p.done && p.dur ? `${Math.round((p.pos / p.dur) * 100)}%` : ''].filter(Boolean).join(' · '))));
+      }));
+  }
+
+  // הערות לפי פרק וזמן
+  function drawNotes() {
+    const c = chapterOf();
+    if (!c) return;
+    const input = h('textarea', { placeholder: tr('notePlaceholder'), 'aria-label': tr('addNote') });
+    const notes = store.notesFor(c.id);
+    fill(notesBox, h('h2', { style: 'margin-top:0' }, `📝 ${tr('notes')} — ${tr('chapter')} ${cur + 1}`),
+      notes.length ? notes.map((n) => h('div', { class: 'note' },
+        n.t != null ? h('button', { class: 'btn btn-sm time', type: 'button', onclick: () => { audio.currentTime = n.t; audio.play().catch(() => {}); } }, formatDuration(n.t) || '0:00') : null,
+        h('p', {}, n.text),
+        h('button', { class: 'icon-btn', type: 'button', 'aria-label': tr('remove'), onclick: () => { store.deleteNote(c.id, n.id); drawNotes(); } }, '🗑'))) : h('p', { class: 'muted small' }, tr('noNotes')),
+      input,
+      h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => { if (store.addNote(c.id, input.value, audio.currentTime)) drawNotes(); } }, tr('addNote')));
+  }
+
+  function start() {
+    if (disposed) return;
+    if (!chapters.length) {
+      // אין קבצי שמע (לא LibriVox) — הנגן של הארכיון
+      fill(body, h('div', { class: 'player' }, h('iframe', { src: safeUrl(book.play.url), title: book.title, allowfullscreen: true, sandbox: 'allow-scripts allow-same-origin allow-presentation' })));
+      return;
+    }
+    const prog = store.getProgress(book.id);
+    const firstOpen = chapters.findIndex((c) => !store.getProgress(c.id)?.done);
+    const i = startCh !== null && chapters[startCh] ? startCh : prog?.pos >= 1 && chapters[prog.pos - 1] ? prog.pos - 1 : Math.max(0, firstOpen);
+    fill(body,
+      h('div', { class: 'panel' }, nowTitle, audio, offlineNote, controls,
+        h('div', { class: 'row', style: 'margin-top:8px' }, chapterDl,
+          downloads.available ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { let n = 0; chapters.forEach((c) => { if (downloads.enqueue(c) === 'queued') n++; }); toast(tr('bookQueued', n)); drawList(); } }, tr('saveBook')) : null),
+        h('p', { class: 'muted small' }, tr('bgAudioNote'))),
+      listBox, notesBox);
+    play(i, { autoplay: false });
+  }
+
+  function load() {
+    fill(body, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('loadingBook')));
+    fetchArchiveMetadata(book).then((meta) => {
+      chapters = parseAudioChapters(book, meta);
+      store.setChapters(book.id, chapters);
+      start();
+    }).catch(() => {
+      if (disposed) return;
+      fill(body, h('div', { class: 'notice warn' }, tr('bookFailed')), h('button', { class: 'btn', type: 'button', onclick: load }, tr('retry')));
+    });
+  }
+  if (chapters) setTimeout(start, 0); else load();
+
+  dlWatchers.add(drawList);
+  cleanupView = () => {
+    disposed = true;
+    saveChapterPos();
+    clearTimeout(sleepTimer);
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+  };
+
+  return [mediaHead(book), mediaActions(book, drawList), h('p', { class: 'desc' }, truncate(book.description, 600)), body];
+}
+
+// ---------- קורא ספרים ----------
+const bookCache = new Map(); // id ← { pages, dir, ocr } — חזרה לספר באותה הפעלה בלי להוריד שוב
+
+function renderRead(id) {
+  const book = findVideo(id);
+  if (!book) return h('p', { class: 'center muted' }, '—');
+  store.addHistory(book);
+
+  const body = h('div', {});
+  let disposed = false;
+  let mode = 'text'; // text / scanned
+
+  function scannedView(reason) {
+    mode = 'scanned';
+    const url = safeUrl(book.play.url);
+    fill(body,
+      h('div', { class: 'notice small' }, reason || tr('scannedBook')),
+      bookCache.has(book.id) ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => showText(bookCache.get(book.id)) }, tr('openText')) : null,
+      url ? h('div', { class: 'player book-frame' }, h('iframe', { src: url, title: book.title, allowfullscreen: true, sandbox: 'allow-scripts allow-same-origin allow-presentation' })) : null);
+  }
+
+  function showText(data) {
+    mode = 'text';
+    const { pages, dir, ocr, local } = data;
+    const prog = store.getProgress(book.id);
+    let page = prog?.pos >= 1 ? Math.min(pages.length - 1, prog.pos - 1) : 0;
+    const article = h('article', { class: 'reader', dir, lang: dir === 'rtl' ? 'he' : 'en' });
+    const labels = [h('span', { class: 'muted small' }), h('span', { class: 'muted small' })]; // למעלה ולמטה
+    const slider = h('input', { type: 'range', min: 1, max: pages.length, value: page + 1, 'aria-label': tr('jumpToPage'), class: 'page-slider' });
+    const notesBox = h('div', {});
+    const setFont = (px) => { article.style.fontSize = `${px}px`; };
+    setFont(store.state.settings.readerFont || 19);
+
+    function show(i, { scroll = true } = {}) {
+      page = Math.max(0, Math.min(pages.length - 1, i));
+      article.textContent = pages[page];
+      labels.forEach((l) => { l.textContent = tr('page', page + 1, pages.length); });
+      slider.value = page + 1;
+      const was = !!store.getProgress(book.id)?.done;
+      store.setProgress(book.id, { pos: page + 1, dur: pages.length, done: was || page + 1 >= pages.length });
+      if (scroll) article.scrollIntoView({ block: 'start' });
+    }
+    slider.addEventListener('change', () => show(Number(slider.value) - 1));
+
+    // החלקה: בספר מימין לשמאל — החלקה ימינה = העמוד הבא
+    let x0 = null;
+    article.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    article.addEventListener('touchend', (e) => {
+      if (x0 === null) return;
+      const dx = e.changedTouches[0].clientX - x0;
+      x0 = null;
+      if (Math.abs(dx) < 60) return;
+      const forward = dir === 'rtl' ? dx > 0 : dx < 0;
+      show(page + (forward ? 1 : -1));
+    });
+
+    function drawNotes() {
+      const input = h('textarea', { placeholder: tr('notePlaceholder'), 'aria-label': tr('addNote') });
+      const notes = store.notesFor(book.id);
+      fill(notesBox, h('h2', { style: 'margin-top:0' }, '🔖 ' + tr('bookmarks')),
+        notes.length ? notes.map((n) => h('div', { class: 'note' },
+          n.t != null ? h('button', { class: 'btn btn-sm time', type: 'button', onclick: () => show(n.t) }, tr('notePage', n.t + 1)) : null,
+          h('p', {}, n.text),
+          h('button', { class: 'icon-btn', type: 'button', 'aria-label': tr('remove'), onclick: () => { store.deleteNote(book.id, n.id); drawNotes(); } }, '🗑'))) : h('p', { class: 'muted small' }, tr('noNotes')),
+        input,
+        h('div', { class: 'row' },
+          h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => { if (store.addNote(book.id, input.value || tr('bookmark').replace('🔖 ', ''), page)) drawNotes(); } }, tr('bookmark'))));
+    }
+
+    const nav = (label) => h('div', { class: 'reader-nav' },
+      h('button', { class: 'btn', type: 'button', onclick: () => show(page - 1) }, tr('prevPage')),
+      label,
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => show(page + 1) }, tr('nextPage')));
+    const navTop = nav(labels[0]);
+    const navBottom = nav(labels[1]);
+
+    fill(body,
+      local ? h('div', { class: 'notice small' }, tr('readingOffline')) : null,
+      ocr ? h('div', { class: 'notice small' }, tr('ocrNote'), ' ', h('button', { class: 'btn btn-sm', type: 'button', onclick: () => scannedView() }, tr('openScanned'))) : null,
+      h('div', { class: 'row reader-tools' },
+        h('button', { class: 'btn btn-sm', type: 'button', 'aria-label': tr('fontSmaller'), title: tr('fontSmaller'), onclick: () => { const f = Math.max(14, (store.state.settings.readerFont || 19) - 2); store.setSetting('readerFont', f); setFont(f); } }, 'A−'),
+        h('button', { class: 'btn btn-sm', type: 'button', 'aria-label': tr('fontBigger'), title: tr('fontBigger'), onclick: () => { const f = Math.min(32, (store.state.settings.readerFont || 19) + 2); store.setSetting('readerFont', f); setFont(f); } }, 'A+'),
+        downloadButton(book),
+        !ocr ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => scannedView() }, tr('openScanned')) : null),
+      navTop, slider, article, navBottom,
+      h('div', { class: 'panel' }, notesBox));
+    show(page, { scroll: false });
+    drawNotes();
+  }
+
+  async function load() {
+    fill(body, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('loadingBook')));
+    try {
+      if (bookCache.has(book.id)) return showText(bookCache.get(book.id));
+      const localSrc = downloads.localSrc(book.id);
+      let text;
+      let ocr = false;
+      if (localSrc) {
+        text = await fetchText(localSrc).catch(() => null);
+      }
+      if (!text) {
+        const t = pickBookText(book, await fetchArchiveMetadata(book));
+        if (disposed) return;
+        if (!t) return scannedView();
+        if (t.size > 8 * 1024 * 1024) return scannedView(tr('bookTooBig'));
+        ocr = t.ocr;
+        text = await fetchText(t.url);
+      }
+      if (disposed) return;
+      const clean = cleanBookText(text);
+      if (clean.length < 200) return scannedView(); // טקסט ריק / פגום — העמודים הסרוקים
+      const data = { pages: paginate(clean), dir: textDir(clean), ocr, local: !!localSrc };
+      bookCache.set(book.id, data);
+      if (bookCache.size > 5) bookCache.delete(bookCache.keys().next().value);
+      showText(data);
+    } catch (e) {
+      if (disposed) return;
+      fill(body, h('div', { class: 'notice warn' }, e?.message === 'too-big' ? tr('bookTooBig') : tr('bookFailed')),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn', type: 'button', onclick: load }, tr('retry')),
+          h('button', { class: 'btn', type: 'button', onclick: () => scannedView() }, tr('openScanned'))));
+    }
+  }
+  load();
+  cleanupView = () => { disposed = true; };
+
+  return [mediaHead(book), mediaActions(book), body];
+}
+
 function renderSettings() {
   const s = store.state.settings;
   const langSel = h('select', { class: 'input', id: 'langSel' }, h('option', { value: 'he' }, 'עברית'), h('option', { value: 'en' }, 'English'));
@@ -576,9 +979,9 @@ function renderSettings() {
   };
 
   const strict = h('input', { type: 'checkbox', class: 'switch', id: 'strict', checked: s.strict });
-  strict.addEventListener('change', () => { store.setSetting('strict', strict.checked); lastSearch = null; });
+  strict.addEventListener('change', () => { store.setSetting('strict', strict.checked); lastSearch = null; lastMedia = null; });
   const extra = h('textarea', { id: 'extraBlock' }, s.extraBlock.join(', '));
-  extra.addEventListener('change', () => { store.setSetting('extraBlock', parseWordList(extra.value)); lastSearch = null; });
+  extra.addEventListener('change', () => { store.setSetting('extraBlock', parseWordList(extra.value)); lastSearch = null; lastMedia = null; });
   const langsIn = h('input', { class: 'input', id: 'contentLangs', value: s.contentLangs.join(', '), dir: 'ltr', placeholder: 'en, he' });
   langsIn.addEventListener('change', () => {
     store.setSetting('contentLangs', parseWordList(langsIn.value).map((x) => x.toLowerCase()).filter((x) => /^[a-z]{2,3}$/.test(x)).slice(0, 5));
@@ -600,6 +1003,9 @@ function renderSettings() {
   dlNext.addEventListener('change', () => store.setSetting('dlAutoNext', dlNext.checked));
   const dlDel = h('input', { type: 'checkbox', class: 'switch', id: 'dlDel', checked: s.dlDeleteLearned });
   dlDel.addEventListener('change', () => store.setSetting('dlDeleteLearned', dlDel.checked));
+
+  const scanned = h('input', { type: 'checkbox', class: 'switch', id: 'bookScanned', checked: s.bookScanned !== false });
+  scanned.addEventListener('change', () => { store.setSetting('bookScanned', scanned.checked); lastMedia = null; });
 
   const backupText = h('textarea', { id: 'backupText', dir: 'ltr', 'aria-label': tr('backup'), style: 'min-height:120px' });
   const doExport = async () => {
@@ -624,6 +1030,8 @@ function renderSettings() {
       h('label', { class: 'field', for: 'extraBlock' }, tr('extraBlock'), extra),
       h('label', { class: 'field', for: 'contentLangs' }, tr('contentLangs'), langsIn),
       h('div', { class: 'notice warn small' }, tr('filterNote'))),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '📚 ' + tr('booksSettings')),
+      h('label', { class: 'check', for: 'bookScanned' }, scanned, tr('bookScanned'))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '⬇ ' + tr('dlSettings')),
       downloads.available ? null : h('div', { class: 'notice small' }, tr('dlOnlyInApp')),
       h('label', { class: 'check', for: 'dlWifi' }, dlWifi, tr('dlWifiOnly')),
@@ -712,6 +1120,8 @@ function route() {
     case 'library': content = renderLibrary(params); break;
     case 'course': content = renderCourse(id); break;
     case 'watch': content = renderWatch(id, params); break;
+    case 'listen': content = renderListen(id, params); break;
+    case 'read': content = renderRead(id); break;
     case 'settings': content = renderSettings(); break;
     default: content = renderHome();
   }

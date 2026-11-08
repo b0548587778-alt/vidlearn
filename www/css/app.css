@@ -184,3 +184,23 @@ dialog::backdrop { background: rgba(0, 0, 0, .45); }
   position: fixed; bottom: calc(76px + env(safe-area-inset-bottom)); inset-inline: 16px; margin: 0 auto; max-width: 420px;
   background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 10px; text-align: center; z-index: 50;
 }
+
+/* ספרי שמע וקריאה */
+.type-tabs { justify-content: center; margin: 4px 0 10px; }
+.media-head { display: flex; gap: 14px; align-items: flex-start; }
+.media-head img { width: 96px; height: 128px; object-fit: cover; border-radius: 10px; background: var(--surface-2); flex: none; box-shadow: var(--shadow); }
+.media-head .watch-title { margin-top: 0; }
+.audio { width: 100%; margin-top: 10px; }
+.book-frame { aspect-ratio: 3 / 4; }
+.reader-tools { margin: 10px 0; }
+.reader-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; }
+.page-slider { width: 100%; accent-color: var(--primary); }
+.reader {
+  background: var(--surface); color: var(--text); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 18px 16px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere;
+  min-height: 55vh; font-family: Georgia, "Noto Serif", "Noto Serif Hebrew", "Times New Roman", serif;
+  scroll-margin-top: 70px;
+}
+
+/* כותרת באנגלית בתוך ממשק עברי (ולהפך) — כיוון לפי הטקסט עצמו, בלי "Preface - 00" */
+.card .title, .lesson .info b, .watch-title, .note p, .panel > b, .desc { unicode-bidi: plaintext; text-align: start; }

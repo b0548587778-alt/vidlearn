@@ -18,6 +18,8 @@ export function defaultState() {
       contentLangs: [],
       sources: DEFAULT_SOURCES.map((s) => ({ ...s })),
       ...DOWNLOAD_DEFAULTS,
+      bookScanned: true, // בחיפוש ספרים — גם ספרים סרוקים (כולל עברית), לא רק Gutenberg
+      readerFont: 19,    // גודל הגופן בקורא
     },
     courses: [],
     favorites: [],
@@ -25,6 +27,7 @@ export function defaultState() {
     progress: {},
     notes: {},
     downloads: {}, // id ← { video, status, path, uri, size, quality, at, error }
+    chapters: {},  // ספר שמע ← רשימת הפרקים (כדי שספר שמור יתנגן בלי רשת)
   };
 }
 
@@ -39,11 +42,11 @@ export const DL_STATUSES = ['queued', 'waiting', 'downloading', 'done', 'error']
 
 // תמונת מצב של סרטון לשמירה — רק השדות שהממשק צריך
 export function snapshot(v) {
-  const { id, sourceId, sourceType, sourceName, title, author, duration, thumb, play, pageUrl, nativeId, host, resolvable, description } = v;
+  const { id, kind, sourceId, sourceType, sourceName, title, author, duration, thumb, play, pageUrl, nativeId, host, resolvable, description, bookId, index, size, gutenberg, lang } = v;
   return {
-    id, sourceId, sourceType, sourceName, title, author, duration, thumb, nativeId, host, resolvable, pageUrl,
+    id, kind, sourceId, sourceType, sourceName, title, author, duration, thumb, nativeId, host, resolvable, pageUrl, bookId, index, size, gutenberg, lang,
     description: String(description || '').slice(0, 600),
-    play: { kind: play?.kind === 'video' ? 'video' : 'iframe', url: String(play?.url || '') },
+    play: { kind: ['video', 'audio'].includes(play?.kind) ? play.kind : 'iframe', url: String(play?.url || '') },
   };
 }
 
@@ -68,6 +71,9 @@ export function normalizeState(raw) {
       dlLimitMB: Number.isFinite(Number(s.dlLimitMB)) && Number(s.dlLimitMB) >= 100 ? Math.min(Math.round(Number(s.dlLimitMB)), 200000) : DOWNLOAD_DEFAULTS.dlLimitMB,
       dlAutoNext: s.dlAutoNext === undefined ? DOWNLOAD_DEFAULTS.dlAutoNext : !!s.dlAutoNext,
       dlDeleteLearned: !!s.dlDeleteLearned,
+      bookScanned: s.bookScanned === undefined ? true : !!s.bookScanned,
+      readerFont: Number.isFinite(Number(s.readerFont)) ? Math.min(32, Math.max(14, Number(s.readerFont))) : 19,
+      sleepMin: Number(s.sleepMin) || 0,
     },
     courses: Array.isArray(raw.courses)
       ? raw.courses.filter((c) => c && typeof c.id === 'string' && Array.isArray(c.lessons))
@@ -78,6 +84,7 @@ export function normalizeState(raw) {
     progress: normalizeProgress(raw.progress),
     notes: normalizeNotes(raw.notes),
     downloads: normalizeDownloads(raw.downloads),
+    chapters: normalizeChapters(raw.chapters),
   };
 }
 
@@ -106,6 +113,15 @@ function normalizeNotes(raw) {
       .map((n) => ({ id: String(n.id || Math.random().toString(36).slice(2)), text: n.text.slice(0, 2000), t: Number.isFinite(n.t) ? n.t : null, at: Number(n.at) || 0 }))
       .slice(0, MAX_NOTES);
     if (clean.length) out[id] = clean;
+  }
+  return out;
+}
+
+function normalizeChapters(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [id, list] of Object.entries(raw)) {
+    if (Array.isArray(list)) out[id] = list.filter(validVideo).slice(0, 1000);
   }
   return out;
 }
@@ -214,6 +230,17 @@ export function createStore(storage, { onSaveError } = {}) {
       pruneProgress();
       return save();
     },
+    // התקדמות בספר: pos = עמוד / פרק נוכחי, dur = סה"כ, done — רק כשהגיעו לסוף
+    setProgress(id, { pos, dur, done }) {
+      const p = state.progress[id] || {};
+      p.pos = Math.max(0, Math.round(Number(pos) || 0));
+      p.dur = Math.max(0, Math.round(Number(dur) || 0));
+      if (done !== undefined) p.done = !!done;
+      p.at = Date.now();
+      state.progress[id] = p;
+      pruneProgress();
+      return save();
+    },
     setDone(id, done) {
       const p = state.progress[id] || {};
       p.done = !!done;
@@ -280,6 +307,19 @@ export function createStore(storage, { onSaveError } = {}) {
       [c.lessons[index], c.lessons[j]] = [c.lessons[j], c.lessons[index]];
       return save();
     },
+    // --- פרקי ספרי שמע ---
+    getChapters(bookId) { return state.chapters[bookId] || null; },
+    setChapters(bookId, list) {
+      state.chapters[bookId] = list.map(snapshot);
+      // עד 200 ספרים במטמון; ספר בקורס / במועדפים נשאר
+      const ids = Object.keys(state.chapters);
+      if (ids.length > 200) {
+        const keep = new Set([...state.courses.flatMap((c) => c.lessons.map((l) => l.id)), ...state.favorites.map((f) => f.id), bookId]);
+        ids.filter((id) => !keep.has(id)).slice(0, ids.length - 200).forEach((id) => delete state.chapters[id]);
+      }
+      return save();
+    },
+
     // --- הורדות ---
     getDownload(id) { return state.downloads[id] || null; },
     setDownload(id, patch) {
@@ -327,7 +367,8 @@ export function continueWatching(state, limit = 10) {
   return state.history
     .filter((h) => {
       const p = state.progress[h.video.id];
-      return p && !p.done && p.pos > 5;
+      // ספר / ספר שמע: pos הוא עמוד / פרק; סרטון: שניות
+      return p && !p.done && (h.video.kind === 'book' || h.video.kind === 'audiobook' ? p.pos >= 1 : p.pos > 5);
     })
     .slice(0, limit)
     .map((h) => h.video);

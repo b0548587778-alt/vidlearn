@@ -1,6 +1,7 @@
 // חיפוש מקביל בכל המקורות הפעילים. מקור שנכשל לא מפיל את החיפוש.
 import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile, buildYoutubeDetailsUrl, parseYoutubeDurations } from './sources.js';
 import { safeUrl } from './util.js';
+import { buildAudioSearchUrl, buildBookSearchUrl, buildScannedSearchUrl, parseArchiveItems, metadataUrl, pickBookText } from './media.js';
 import { isAllowed, mergeResults } from './filter.js';
 
 export const TIMEOUT_MS = 12000;
@@ -68,6 +69,15 @@ export async function searchAll(query, settings, { cursors = null, fetchImpl = f
 
 // הקובץ הישיר לסרטון ← { url, size }; כשל ← { url: '' } (נשארים עם הנגן המוטמע)
 export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'normal' } = {}) {
+  if (v.sourceType === 'audio') return { url: safeUrl(v.play?.url), size: Number(v.size) || 0 };
+  if (v.sourceType === 'book') {
+    try {
+      const t = pickBookText(v, await getJson(metadataUrl(v), fetchImpl, 10000));
+      return t ? { url: t.url, size: t.size } : { url: '', size: 0 };
+    } catch {
+      return { url: '', size: 0 };
+    }
+  }
   const url = buildResolveUrl(v);
   if (url) {
     try {
@@ -84,4 +94,34 @@ export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'norma
 export async function resolveDirect(v, opts = {}) {
   if (v.sourceType === 'commons') return v.play?.kind === 'video' ? safeUrl(v.play.url) : '';
   return (await resolveDirectFile(v, opts)).url;
+}
+
+// חיפוש ספרי שמע / ספרי קריאה (Internet Archive) ← { items, next, filtered }.
+// ספרים: Gutenberg (טקסט נקי) קודם, ואחריו ספרים סרוקים — לסירוגין, מקור שנכשל לא מפיל
+export async function searchMedia(kind, query, settings, { page = 0, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
+  const opts = { page, langs: settings.contentLangs || [] };
+  const urls = kind === 'audiobook'
+    ? [buildAudioSearchUrl(query, opts)]
+    : [buildBookSearchUrl(query, opts), ...(settings.bookScanned !== false ? [buildScannedSearchUrl(query, opts)] : [])];
+  const results = await Promise.allSettled(urls.map(async (u) => parseArchiveItems(await getJson(u, fetchImpl, timeoutMs), kind, page)));
+  const ok = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  if (!ok.length) throw results[0].reason;
+  const items = mergeResults(ok.map((r) => r.items));
+  const extraBlock = settings.extraBlock || [];
+  const allowed = items.filter((v) => isAllowed(v, { extraBlock, strict: settings.strict }));
+  return { items: allowed, next: ok.some((r) => r.next !== null) ? page + 1 : null, filtered: items.length - allowed.length };
+}
+
+// מטא-דאטה של פריט בארכיון (פרקים / קובץ טקסט)
+export function fetchArchiveMetadata(item, { fetchImpl = fetch } = {}) {
+  return getJson(metadataUrl(item), fetchImpl, 12000);
+}
+
+// טקסט הספר (מהרשת או מקובץ שמור). תקרה של 8MB — ספר גדול מזה לא נטען לזיכרון
+export async function fetchText(url, { fetchImpl = fetch, maxBytes = 8 * 1024 * 1024 } = {}) {
+  const res = await fetchImpl(url);
+  if (!res.ok) throw new Error(`http-${res.status}`);
+  const text = await res.text();
+  if (text.length > maxBytes) throw new Error('too-big');
+  return text;
 }

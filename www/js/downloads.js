@@ -22,7 +22,7 @@ function hashId(str) {
 export function fileNameFor(v, url) {
   let ext = 'mp4';
   try {
-    const m = new URL(url).pathname.match(/\.(mp4|webm|ogv|m4v)$/i);
+    const m = new URL(url).pathname.match(/\.(mp4|webm|ogv|m4v|mp3|ogg|txt)$/i);
     if (m) ext = m[1].toLowerCase();
   } catch { /* ברירת מחדל mp4 */ }
   // תחילית קריאה (סוג המקור) + גיבוב של המזהה המלא — שני סרטונים לא יקבלו אותו קובץ

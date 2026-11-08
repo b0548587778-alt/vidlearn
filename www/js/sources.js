@@ -382,6 +382,8 @@ export function parseResolve(v, json, quality = 'normal') {
 // אפשר לשמור בטלפון רק סרטון עם קובץ ישיר (לא יוטיוב / Invidious)
 export function canDownload(v) {
   if (!v) return false;
+  if (v.sourceType === 'audio') return v.play?.kind === 'audio' && !!safeUrl(v.play.url); // פרק בספר שמע
+  if (v.sourceType === 'book') return !!v.nativeId; // ספר קריאה — קובץ הטקסט
   if (v.sourceType === 'commons') return v.play?.kind === 'video' && !!safeUrl(v.play.url) && /^\d+$/.test(String(v.nativeId || ''));
   if (v.sourceType === 'archive') return !!v.nativeId;
   if (v.sourceType === 'peertube') return !!(v.host && v.nativeId);
