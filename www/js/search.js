@@ -2,13 +2,15 @@
 import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile, buildYoutubeDetailsUrl, parseYoutubeDurations } from './sources.js';
 import { safeUrl } from './util.js';
 import { buildAudioSearchUrl, buildBookSearchUrl, buildScannedSearchUrl, parseArchiveItems, metadataUrl, pickBookText } from './media.js';
-import { isAllowed, mergeResults } from './filter.js';
+import { buildPodcastSearchUrl, parsePodcastResults, parsePodcastFeed } from './podcasts.js';
+import { buildWikiSummaryUrl, parseWikiSummary, buildWikiArticleUrl, parseWikiArticle, wikiLang } from './wiki.js';
+import { isAllowed, mergeResults, blockedBy } from './filter.js';
 
 export const TIMEOUT_MS = 12000;
 
 // זמן קצוב עם Promise.race: באפליקציה fetch עובר דרך CapacitorHttp (native),
 // שעלול להתעלם מ-AbortSignal — בלי זה שרת שלא עונה היה תוקע את כל החיפוש
-async function getJson(url, fetchImpl, timeoutMs = TIMEOUT_MS) {
+async function getJson(url, fetchImpl, timeoutMs = TIMEOUT_MS, { text = false, headers = {} } = {}) {
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -17,9 +19,9 @@ async function getJson(url, fetchImpl, timeoutMs = TIMEOUT_MS) {
   try {
     return await Promise.race([
       (async () => {
-        const res = await fetchImpl(url, { signal: ctl?.signal, headers: { Accept: 'application/json' } });
+        const res = await fetchImpl(url, { signal: ctl?.signal, headers: { Accept: text ? '*/*' : 'application/json', ...headers } });
         if (!res.ok) throw new Error(`http-${res.status}`);
-        return res.json();
+        return text ? res.text() : res.json();
       })(),
       timeout,
     ]);
@@ -28,13 +30,30 @@ async function getJson(url, fetchImpl, timeoutMs = TIMEOUT_MS) {
   }
 }
 
-// cursors: { [sourceId]: cursor } — לעמוד הבא; מקור שסיים (null) מדולג
-export async function searchAll(query, settings, { cursors = null, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
-  const active = settings.sources.filter(sourceReady).filter((s) => !cursors || (s.id in cursors && cursors[s.id] !== null));
+// המשימות של חיפוש: כל מקור עם השאילתה המקורית, ובחיפוש בעברית — גם עם המונח באנגלית
+// (מקור.id + '~alt'). יוטיוב לא מקבל את החיפוש הנוסף: הוא מוצא עברית לבד, וחבל על המכסה
+export const ALT_SUFFIX = '~alt';
+const altEligible = (s) => s.type !== 'youtube';
+
+// cursors: { [taskId]: cursor } — לעמוד הבא; משימה שסיימה (null) מדולגת.
+// alt: המונח באנגלית (מחרוזת, או Promise שלה — כדי שהחיפוש המקורי לא יחכה לוויקיפדיה)
+export async function searchAll(query, settings, { cursors = null, alt = null, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
+  const ready = settings.sources.filter(sourceReady);
+  const tasks = [
+    ...ready.map((s) => ({ id: s.id, source: s, alt: false })),
+    ...(alt ? ready.filter(altEligible).map((s) => ({ id: s.id + ALT_SUFFIX, source: s, alt: true })) : []),
+  ].filter((t) => !cursors || (t.id in cursors && cursors[t.id] !== null));
   const extraBlock = settings.extraBlock || [];
-  const results = await Promise.allSettled(active.map(async (s) => {
-    const cursor = cursors ? cursors[s.id] : 0;
-    const url = buildSearchUrl(s, query, { cursor, langs: settings.contentLangs || [] });
+  const altQuery = Promise.resolve(alt).catch(() => null);
+  const results = await Promise.allSettled(tasks.map(async (t) => {
+    const s = t.source;
+    let q = query;
+    if (t.alt) {
+      q = await altQuery;
+      if (!q || q.trim().toLowerCase() === String(query).trim().toLowerCase()) return { items: [], next: null, filtered: 0 };
+    }
+    const cursor = cursors && t.id in cursors ? cursors[t.id] : 0;
+    const url = buildSearchUrl(s, q, { cursor, langs: settings.contentLangs || [] });
     const json = await getJson(url, fetchImpl, timeoutMs);
     const { items, next } = parseResults(s, json, cursor);
     if (s.type === 'youtube' && items.length) {
@@ -44,27 +63,32 @@ export async function searchAll(query, settings, { cursors = null, fetchImpl = f
         items.forEach((v) => { if (durs[v.nativeId]) v.duration = durs[v.nativeId]; });
       } catch { /* בלי משך */ }
     }
+    if (t.alt) items.forEach((v) => { v.altQuery = q; });
     const allowed = items.filter((v) => isAllowed(v, { extraBlock, keywordFilter: needsKeywordFilter(s), strict: settings.strict }));
-    return { source: s, items: allowed, next, filtered: items.length - allowed.length };
+    return { items: allowed, next, filtered: items.length - allowed.length };
   }));
 
-  const lists = [];
+  const primary = [];
+  const secondary = [];
   const nextCursors = {};
   const errors = [];
   let filtered = 0;
   results.forEach((r, i) => {
-    const s = active[i];
+    const t = tasks[i];
     if (r.status === 'fulfilled') {
-      lists.push(r.value.items);
-      nextCursors[s.id] = r.value.next;
+      (t.alt ? secondary : primary).push(r.value.items);
+      nextCursors[t.id] = r.value.next;
       filtered += r.value.filtered;
     } else {
-      errors.push({ source: s, message: String(r.reason?.message || r.reason) });
-      nextCursors[s.id] = null;
+      // שגיאה בחיפוש הנוסף לא מוצגת — המקור עצמו כבר דווח (או ענה) בחיפוש המקורי
+      if (!t.alt) errors.push({ source: t.source, message: String(r.reason?.message || r.reason) });
+      nextCursors[t.id] = null;
     }
   });
   const hasMore = Object.values(nextCursors).some((c) => c !== null);
-  return { items: mergeResults(lists), cursors: nextCursors, hasMore, errors, filtered, searched: active.length };
+  // התוצאות בשפת החיפוש קודם, אחריהן התוצאות מהמונח באנגלית (בלי כפילויות)
+  const items = mergeResults([[...mergeResults(primary), ...mergeResults(secondary)]]);
+  return { items, cursors: nextCursors, hasMore, errors, filtered, searched: ready.length, alt: await altQuery };
 }
 
 // הקובץ הישיר לסרטון ← { url, size }; כשל ← { url: '' } (נשארים עם הנגן המוטמע)
@@ -96,20 +120,59 @@ export async function resolveDirect(v, opts = {}) {
   return (await resolveDirectFile(v, opts)).url;
 }
 
-// חיפוש ספרי שמע / ספרי קריאה (Internet Archive) ← { items, next, filtered }.
-// ספרים: Gutenberg (טקסט נקי) קודם, ואחריו ספרים סרוקים — לסירוגין, מקור שנכשל לא מפיל
-export async function searchMedia(kind, query, settings, { page = 0, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
-  const opts = { page, langs: settings.contentLangs || [] };
-  const urls = kind === 'audiobook'
-    ? [buildAudioSearchUrl(query, opts)]
-    : [buildBookSearchUrl(query, opts), ...(settings.bookScanned !== false ? [buildScannedSearchUrl(query, opts)] : [])];
-  const results = await Promise.allSettled(urls.map(async (u) => parseArchiveItems(await getJson(u, fetchImpl, timeoutMs), kind, page)));
-  const ok = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
-  if (!ok.length) throw results[0].reason;
-  const items = mergeResults(ok.map((r) => r.items));
+// חיפוש ספרי שמע / ספרי קריאה (Internet Archive) / פודקאסטים (Apple) ← { items, next, filtered }.
+// ספרים: Gutenberg (טקסט נקי) קודם, ואחריו ספרים סרוקים — לסירוגין, מקור שנכשל לא מפיל.
+// alt: המונח באנגלית — עוד חיפוש (ספרי השמע וספרי Gutenberg כמעט כולם באנגלית)
+export async function searchMedia(kind, query, settings, { page = 0, alt = '', fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
   const extraBlock = settings.extraBlock || [];
-  const allowed = items.filter((v) => isAllowed(v, { extraBlock, strict: settings.strict }));
-  return { items: allowed, next: ok.some((r) => r.next !== null) ? page + 1 : null, filtered: items.length - allowed.length };
+  const filterAll = (items) => items.filter((v) => isAllowed(v, { extraBlock, strict: settings.strict }));
+  if (kind === 'podcast') {
+    const r = parsePodcastResults(await getJson(buildPodcastSearchUrl(query, { page, langs: settings.contentLangs || [] }), fetchImpl, timeoutMs), page);
+    const allowed = filterAll(r.items);
+    return { items: allowed, next: r.next, filtered: r.filtered + r.items.length - allowed.length };
+  }
+  const opts = { page, langs: settings.contentLangs || [] };
+  const build = (q) => (kind === 'audiobook'
+    ? [buildAudioSearchUrl(q, opts)]
+    : [buildBookSearchUrl(q, opts), ...(settings.bookScanned !== false ? [buildScannedSearchUrl(q, opts)] : [])]);
+  const altOk = alt && alt.trim().toLowerCase() !== String(query).trim().toLowerCase();
+  const groups = [build(query), altOk ? build(alt) : []];
+  const run = (urls) => Promise.allSettled(urls.map(async (u) => parseArchiveItems(await getJson(u, fetchImpl, timeoutMs), kind, page)));
+  const [main, extra] = await Promise.all(groups.map(run));
+  const ok = (rs) => rs.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  if (!ok(main).length && !ok(extra).length) throw main[0].reason;
+  const items = mergeResults([[...mergeResults(ok(main).map((r) => r.items)), ...mergeResults(ok(extra).map((r) => r.items))]]);
+  const allowed = filterAll(items);
+  const next = [...ok(main), ...ok(extra)].some((r) => r.next !== null) ? page + 1 : null;
+  return { items: allowed, next, filtered: items.length - allowed.length };
+}
+
+// ---------- ויקיפדיה ----------
+// Wikimedia מבקשים לזהות את האפליקציה (Api-User-Agent עובר גם בדפדפן)
+const WIKI_HEADERS = { 'Api-User-Agent': 'VidLearn/0.1 (https://github.com/b0548587778-alt/vidlearn)' };
+
+// ← ערך לנושא החיפוש, או null (אין / לא הולם / שגיאה — לא מפיל כלום)
+export async function fetchWikiSummary(query, settings, { fetchImpl = fetch, timeoutMs = 8000 } = {}) {
+  try {
+    const lang = wikiLang(query, settings.lang);
+    const w = parseWikiSummary(await getJson(buildWikiSummaryUrl(query, lang), fetchImpl, timeoutMs, { headers: WIKI_HEADERS }), lang, query);
+    if (!w) return null;
+    if (blockedBy({ title: w.title, description: w.extract.slice(0, 1500) }, settings.extraBlock || [])) return null;
+    return w;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchWikiArticle(w, { fetchImpl = fetch } = {}) {
+  return parseWikiArticle(await getJson(buildWikiArticleUrl(w.pageid, w.lang), fetchImpl, 15000, { headers: WIKI_HEADERS }));
+}
+
+// ---------- פודקאסטים ----------
+export async function fetchPodcastEpisodes(podcast, { fetchImpl = fetch } = {}) {
+  const xml = await getJson(safeUrl(podcast.play?.url), fetchImpl, 15000, { text: true });
+  if (xml.length > 15 * 1024 * 1024) throw new Error('too-big');
+  return parsePodcastFeed(podcast, xml);
 }
 
 // מטא-דאטה של פריט בארכיון (פרקים / קובץ טקסט)

@@ -118,7 +118,7 @@ export function buildSearchUrl(source, query, { cursor = 0, langs = [], pageSize
         videoEmbeddable: 'true',
         maxResults: pageSize,
         q,
-        relevanceLanguage: langs[0],
+        relevanceLanguage: langs[0] || (/[\u0590-\u05FF]/.test(q) ? 'he' : undefined),
         pageToken: typeof cursor === 'string' ? cursor : undefined,
         key: String(source.key || '').trim(),
       });
