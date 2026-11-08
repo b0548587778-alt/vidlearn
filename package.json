@@ -1,0 +1,21 @@
+{
+  "name": "vidlearn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VidLearn — אפליקציית אנדרואיד לסרטוני למידה מכמה מקורות, בלי שרת",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "serve": "node tools/serve.js",
+    "android:add": "cap add android",
+    "android:sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "appId": "com.vidlearn.app",
+  "appName": "VidLearn",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
