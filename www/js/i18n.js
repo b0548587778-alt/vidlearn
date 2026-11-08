@@ -71,6 +71,25 @@ export const STRINGS = {
     readingOffline: '📴 קורא מהטלפון — בלי אינטרנט', listenOffline: '📴 מאזין מהטלפון',
     bookScanned: 'בחיפוש ספרים — גם ספרים סרוקים (כולל ספרים בעברית), לא רק Gutenberg',
     booksSettings: 'ספרים וספרי שמע', continueLearning: 'המשך מאיפה שעצרת',
+    // פודקאסטים
+    podcasts: 'פודקאסטים', searchPodcasts: 'חיפוש פודקאסט לימודי',
+    podcastHint: 'פודקאסטים לימודיים מספריית הפודקאסטים של Apple — הרבה בעברית (היסטוריה, מדע, תנ"ך…). רק קטגוריות לימודיות, בלי תוכן בוטה.',
+    episode: 'פרק', episodes: 'פרקים', noEpisodes: 'לא נמצאו פרקים להאזנה בפודקאסט הזה.',
+    // ויקיפדיה
+    wikipedia: 'ויקיפדיה', wikiReadFull: '📖 קריאת הערך המלא', wikiClose: 'סגירת הערך', wikiFailed: 'לא הצלחנו לטעון את הערך.',
+    altInfo: (q) => `החיפוש בעברית הורחב גם ל-"${q}" באנגלית — כדי להביא יותר תוצאות`,
+    crossLang: 'בחיפוש בעברית — לחפש גם את המונח באנגלית (מתורגם אוטומטית דרך ויקיפדיה)',
+    // יוטיוב
+    youtubeOffHint: 'יוטיוב כבוי. רוב סרטוני הלימוד בעברית נמצאים ביוטיוב — חברו אותו פעם אחת עם מפתח חינמי.',
+    youtubeHowTo: 'איך מחברים את יוטיוב?',
+    youtubeSteps: [
+      'נכנסים ל-Google Cloud Console (כפתור למטה) עם חשבון Google.',
+      'יוצרים פרויקט חדש (כל שם).',
+      'בעמוד "YouTube Data API v3" לוחצים "Enable" (הפעלה).',
+      'בתפריט: APIs & Services ← Credentials ← Create credentials ← API key.',
+      'מעתיקים את המפתח ומדביקים בשדה "מפתח API" כאן למעלה. יוטיוב יופעל לבד.',
+      'המפתח חינמי (כ-100 חיפושים ביום) ונשמר רק בטלפון.',
+    ],
   },
   en: {
     appName: 'VidLearn',
@@ -141,6 +160,22 @@ export const STRINGS = {
     readingOffline: '📴 Reading from the phone — no internet', listenOffline: '📴 Playing from the phone',
     bookScanned: 'When searching books — include scanned books, not only Project Gutenberg',
     booksSettings: 'Books & audiobooks', continueLearning: 'Continue where you left off',
+    podcasts: 'Podcasts', searchPodcasts: 'Search learning podcasts',
+    podcastHint: 'Learning podcasts from the Apple Podcasts directory. Only educational categories, no explicit content.',
+    episode: 'Episode', episodes: 'Episodes', noEpisodes: 'No playable episodes found in this podcast.',
+    wikipedia: 'Wikipedia', wikiReadFull: '📖 Read the full article', wikiClose: 'Close article', wikiFailed: 'Could not load the article.',
+    altInfo: (q) => `Hebrew search also expanded to "${q}" in English — for more results`,
+    crossLang: 'For Hebrew searches — also search the English term (translated automatically via Wikipedia)',
+    youtubeOffHint: 'YouTube is off. Most learning videos (especially in Hebrew) are on YouTube — connect it once with a free key.',
+    youtubeHowTo: 'How to connect YouTube?',
+    youtubeSteps: [
+      'Open Google Cloud Console (button below) with a Google account.',
+      'Create a new project (any name).',
+      'On the "YouTube Data API v3" page click "Enable".',
+      'Menu: APIs & Services → Credentials → Create credentials → API key.',
+      'Copy the key and paste it into the "API key" field above. YouTube turns on by itself.',
+      'The key is free (about 100 searches a day) and stays only on this phone.',
+    ],
   },
 };
 
@@ -153,6 +188,7 @@ export const SUBJECTS = [
   { id: 'cs', icon: '💻', he: 'תכנות ומחשבים', en: 'Programming & CS', q: 'programming tutorial' },
   { id: 'languages', icon: '🗣️', he: 'שפות', en: 'Languages', q: 'english grammar lesson' },
   { id: 'history', icon: '📜', he: 'היסטוריה', en: 'History', q: 'history lecture' },
+  { id: 'judaism', icon: '🕎', he: 'יהדות ותנ״ך', en: 'Judaism & Bible', q: 'torah lesson', hq: 'תנ"ך' },
   { id: 'geography', icon: '🌍', he: 'גאוגרפיה', en: 'Geography', q: 'geography lesson' },
   { id: 'economics', icon: '📈', he: 'כלכלה', en: 'Economics', q: 'economics lecture' },
   { id: 'engineering', icon: '⚙️', he: 'הנדסה', en: 'Engineering', q: 'engineering course' },

@@ -204,3 +204,24 @@ dialog::backdrop { background: rgba(0, 0, 0, .45); }
 
 /* כותרת באנגלית בתוך ממשק עברי (ולהפך) — כיוון לפי הטקסט עצמו, בלי "Preface - 00" */
 .card .title, .lesson .info b, .watch-title, .note p, .panel > b, .desc { unicode-bidi: plaintext; text-align: start; }
+
+/* ערך מוויקיפדיה בראש תוצאות החיפוש */
+.wiki { margin: 12px 0; }
+.wiki-head { display: flex; gap: 12px; align-items: flex-start; }
+.wiki-head img { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; background: var(--surface-2); flex: none; }
+.wiki-head h2 { margin: 6px 0 0; font-size: 1.15rem; }
+.wiki-extract { margin: 10px 0; line-height: 1.6; white-space: pre-line; }
+.wiki-article { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); line-height: 1.7; overflow-wrap: anywhere; }
+.wiki-article h3 { margin: 18px 0 6px; font-size: 1.05rem; }
+.wiki-article h4 { margin: 14px 0 4px; font-size: .98rem; }
+.wiki-article p { margin: 0 0 10px; }
+
+/* הוראות חיבור יוטיוב בהגדרות */
+.howto { margin-top: 8px; }
+.howto summary { cursor: pointer; font-weight: 600; color: var(--primary); }
+.howto ol { margin: 8px 0; padding-inline-start: 22px; line-height: 1.6; }
+
+/* ארבע לשוניות סוג תוכן — גלילה אופקית בטלפון צר */
+.type-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+.type-tabs .btn { flex: none; }
+.panel .muted.small { overflow-wrap: anywhere; }

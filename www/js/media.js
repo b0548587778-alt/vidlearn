@@ -3,7 +3,7 @@
 import { stripHtml, parseDuration, safeUrl } from './util.js';
 import { PAGE_SIZE } from './sources.js';
 
-export const KINDS = ['video', 'audiobook', 'book'];
+export const KINDS = ['video', 'audiobook', 'podcast', 'book'];
 
 // ז'אנרים שלא מתאימים לאפליקציית לימוד — נפסלים לפי שדה הנושא של הספר
 export const BOOK_EXCLUDE_SUBJECTS = [
@@ -214,14 +214,16 @@ export function textDir(text) {
 }
 
 export function isMediaItem(v) {
-  return v?.kind === 'audiobook' || v?.kind === 'book';
+  return v?.kind === 'audiobook' || v?.kind === 'podcast' || v?.kind === 'book';
 }
 
 // כתובת המסך של פריט, לפי סוגו
 export function itemHash(v, courseId) {
   const c = courseId ? `?course=${encodeURIComponent(courseId)}` : '';
+  // פרק פודקאסט — לפי המזהה: פרקים חדשים בראש הפיד מזיזים את המספור
+  if (v.kind === 'chapter' && String(v.bookId).startsWith('podcast:')) return `#/listen/${encodeURIComponent(v.bookId)}?ep=${encodeURIComponent(v.id)}`;
   if (v.kind === 'chapter') return `#/listen/${encodeURIComponent(v.bookId)}?ch=${Number(v.index) || 0}`;
-  if (v.kind === 'audiobook') return `#/listen/${encodeURIComponent(v.id)}${c}`;
+  if (v.kind === 'audiobook' || v.kind === 'podcast') return `#/listen/${encodeURIComponent(v.id)}${c}`;
   if (v.kind === 'book') return `#/read/${encodeURIComponent(v.id)}${c}`;
   return `#/watch/${encodeURIComponent(v.id)}${c}`;
 }

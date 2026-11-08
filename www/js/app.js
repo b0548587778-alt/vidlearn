@@ -1,6 +1,7 @@
 // ממשק האפליקציה. כל טקסט שמגיע מהרשת נכנס דרך textContent (h()) — אין innerHTML עם נתונים חיצוניים.
 import { createStore, courseProgress, continueWatching } from './store.js';
-import { searchAll, resolveDirect, resolveDirectFile, searchMedia, fetchArchiveMetadata, fetchText } from './search.js';
+import { searchAll, resolveDirect, resolveDirectFile, searchMedia, fetchArchiveMetadata, fetchText, fetchWikiSummary, fetchWikiArticle, fetchPodcastEpisodes } from './search.js';
+import { isHebrewQuery, articleBlocks } from './wiki.js';
 import { itemHash, parseAudioChapters, pickBookText, cleanBookText, paginate, textDir } from './media.js';
 import { SOURCE_TYPES, sourceReady, canDownload } from './sources.js';
 import { createDownloads, formatBytes } from './downloads.js';
@@ -148,7 +149,7 @@ function findVideo(id) {
 function go(hash) { location.hash = hash; }
 // כל פריט נפתח במסך שלו: סרטון ← נגן, ספר שמע ← השמעה, ספר ← קורא
 const watchHash = itemHash;
-const KIND_ICON = { audiobook: '🎧', book: '📖', chapter: '🎧' };
+const KIND_ICON = { audiobook: '🎧', podcast: '🎙️', book: '📖', chapter: '🎧' };
 
 // ---------- כרטיס סרטון ----------
 function videoCard(v, { courseId } = {}) {
@@ -172,26 +173,28 @@ function videoCard(v, { courseId } = {}) {
   );
 }
 
-const TYPES = [['video', '🎬', 'videos'], ['audiobook', '🎧', 'audiobooks'], ['book', '📖', 'books']];
+const TYPES = [['video', '🎬', 'videos'], ['podcast', '🎙️', 'podcasts'], ['audiobook', '🎧', 'audiobooks'], ['book', '📖', 'books']];
 let homeType = 'video'; // סוג התוכן שנבחר במסך הבית
 
 function searchHash(q, type) {
   return `#/search?q=${encodeURIComponent(q)}${type && type !== 'video' ? `&type=${type}` : ''}`;
 }
 
-// מתג סוג התוכן: סרטונים / ספרי שמע / ספרים
+// מתג סוג התוכן: סרטונים / פודקאסטים / ספרי שמע / ספרים
 function typeTabs(current, onPick) {
   return h('div', { class: 'tabs type-tabs', role: 'tablist' }, TYPES.map(([k, icon, label]) =>
     h('button', { class: 'btn btn-sm', type: 'button', role: 'tab', 'aria-pressed': String(current === k), onclick: () => onPick(k) }, `${icon} ${tr(label)}`)));
 }
 
 // מילות חיפוש של תחום ← לספרים (בלי "שיעור" / "הרצאה")
+// פודקאסטים בממשק בעברית — בשם העברי (יש הרבה פודקאסטים לימודיים בעברית)
 function subjectQuery(sub, type) {
+  if (type === 'podcast') return store.state.settings.lang === 'he' ? sub.hq || sub.he : sub.en;
   return type === 'video' ? sub.q : sub.q.replace(/\b(lesson|lecture|course|tutorial)\b/g, '').trim();
 }
 
 function searchBar(initial = '', type = 'video') {
-  const placeholder = type === 'audiobook' ? tr('searchAudio') : type === 'book' ? tr('searchBooks') : tr('searchPlaceholder');
+  const placeholder = { audiobook: tr('searchAudio'), book: tr('searchBooks'), podcast: tr('searchPodcasts') }[type] || tr('searchPlaceholder');
   const input = h('input', { type: 'search', value: initial, placeholder, 'aria-label': tr('search'), enterkeyhint: 'search' });
   const submit = () => { const q = input.value.trim(); if (q) go(searchHash(q, type)); };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -226,11 +229,80 @@ function courseCard(c) {
       h('span', { class: 'muted small' }, `${tr('lessons', pr.total)} · ${pr.pct}%`)));
 }
 
+// ---------- ויקיפדיה: ערך לנושא החיפוש ----------
+// מטמון לפי שאילתה: מעבר בין סוגי התוכן / חזרה מנגן לא מבקש שוב
+const wikiCache = new Map();
+function wikiFor(q) {
+  const s = store.state.settings;
+  const key = `${s.lang}|${s.extraBlock.join(',')}|${q}`;
+  if (!wikiCache.has(key)) {
+    const p = fetchWikiSummary(q, s);
+    wikiCache.set(key, p);
+    // אין ערך / אין רשת — לא נשמר: בחיפוש הבא מנסים שוב
+    p.then((w) => { if (!w && wikiCache.get(key) === p) wikiCache.delete(key); });
+    if (wikiCache.size > 30) wikiCache.delete(wikiCache.keys().next().value);
+  }
+  return wikiCache.get(key);
+}
+// בחיפוש בעברית — גם המונח באנגלית (מהקישור הבין-לשוני של הערך), אם לא כובה בהגדרות
+function altFor(q) {
+  if (!isHebrewQuery(q) || store.state.settings.crossLang === false) return Promise.resolve(null);
+  return wikiFor(q).then((w) => (w && w.lang === 'he' && w.alt ? w.alt : null));
+}
+
+function wikiCard(q) {
+  const box = h('div', {});
+  wikiFor(q).then((w) => {
+    if (!w) return;
+    const dir = w.lang === 'he' || w.lang === 'ar' ? 'rtl' : 'ltr';
+    const full = h('div', { class: 'wiki-article', hidden: true, dir, lang: w.lang });
+    let loaded = false;
+    const toggle = h('button', { class: 'btn btn-sm', type: 'button' }, tr('wikiReadFull'));
+    toggle.addEventListener('click', async () => {
+      if (!full.hidden) { full.hidden = true; toggle.textContent = tr('wikiReadFull'); return; }
+      full.hidden = false;
+      toggle.textContent = tr('wikiClose');
+      if (loaded) return;
+      fill(full, h('div', { class: 'spinner' }));
+      try {
+        const blocks = articleBlocks(await fetchWikiArticle(w));
+        loaded = true;
+        fill(full, blocks.map((b) => (b.type === 'h' ? h(b.level <= 2 ? 'h3' : 'h4', {}, b.text) : h('p', {}, b.text))));
+      } catch {
+        fill(full, h('div', { class: 'notice warn small' }, tr('wikiFailed')));
+      }
+    });
+    const thumb = safeUrl(w.thumb);
+    fill(box, h('section', { class: 'panel wiki' },
+      h('div', { class: 'wiki-head' },
+        thumb ? h('img', { src: thumb, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }) : null,
+        h('div', {},
+          h('span', { class: 'badge' }, '📚 ' + tr('wikipedia')),
+          h('h2', { dir, lang: w.lang }, w.title))),
+      h('p', { class: 'wiki-extract', dir, lang: w.lang }, truncate(w.extract, 900)),
+      h('div', { class: 'row' }, toggle,
+        h('a', { class: 'btn btn-sm', href: w.url, target: '_blank', rel: 'noopener noreferrer' }, '↗ ' + tr('openSource'))),
+      full));
+  });
+  return box;
+}
+
+// יוטיוב כבוי — שם רוב סרטוני הלימוד בעברית. הסבר קצר ומעבר להגדרות
+function youtubeHint() {
+  const yt = store.state.settings.sources.find((s) => s.type === 'youtube');
+  if (!yt || sourceReady(yt)) return null;
+  return h('div', { class: 'notice small' }, tr('youtubeOffHint'), ' ',
+    h('a', { class: 'btn btn-sm', href: '#/settings?focus=youtube' }, tr('youtubeHowTo')));
+}
+
 function renderSearch(params) {
   const q = (params.get('q') || '').trim();
   const type = TYPES.some(([k]) => k === params.get('type')) ? params.get('type') : 'video';
   const wrap = h('div', {});
   wrap.append(typeTabs(type, (k) => go(q ? searchHash(q, k) : `#/search${k === 'video' ? '' : `?type=${k}`}`)), searchBar(q, type));
+  // תחום לימוד: הערך לפי שם התחום בשפת הממשק (השאילתה עצמה באנגלית)
+  const sub = SUBJECTS.find((x) => x.id === params.get('subject'));
+  if (q) wrap.append(wikiCard(sub ? sub[store.state.settings.lang] || sub.he : q));
   if (type !== 'video') return renderMediaResults(type, q, wrap);
   if (!q) {
     wrap.append(h('p', { class: 'muted center' }, tr('tagline')));
@@ -267,8 +339,10 @@ function renderSearch(params) {
     fill(srcSel, h('option', { value: 'all' }, tr('allSources')), ...names.map((n) => h('option', { value: n }, n)));
     srcSel.value = names.includes(filters.source) ? filters.source : 'all';
     const shown = st.items.filter((v) => (filters.source === 'all' || v.sourceName === filters.source) && fitsLength(v));
-    fill(status, 
+    fill(status,
       h('p', { class: 'muted small' }, tr('resultsInfo', st.items.length, st.searched)),
+      st.alt ? h('p', { class: 'muted small' }, tr('altInfo', st.alt)) : null,
+      isHebrewQuery(q) || st.items.length < 6 ? youtubeHint() : null,
       st.filtered ? h('p', { class: 'muted small' }, tr('filteredInfo', st.filtered)) : null,
       ...st.errors.map((e) => h('div', { class: 'notice warn small' }, tr('sourceFailed', e.source.name))),
     );
@@ -283,7 +357,7 @@ function renderSearch(params) {
     if (!st.loading) {
       st.loading = (async () => {
         try {
-          const r = await searchAll(q, store.state.settings, { cursors: st.cursors });
+          const r = await searchAll(q, store.state.settings, { cursors: st.cursors, alt: st.alt });
           const ids = new Set(st.items.map((v) => v.id));
           st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
           st.cursors = { ...st.cursors, ...r.cursors };
@@ -308,19 +382,35 @@ function renderSearch(params) {
     fill(results, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('searching')));
     const token = {};
     lastSearch = token;
+    // קודם התוצאות בשפת החיפוש; המונח באנגלית (ויקיפדיה + עוד חיפוש) נוסף כשהוא מגיע — לא מעכב
+    const altP = altFor(q);
     searchAll(q, store.state.settings).then((r) => {
       if (lastSearch !== token) return; // חיפוש חדש החליף אותו
-      lastSearch = { q, ...r, items: r.items.map(remember) };
+      const st = { q, ...r, alt: null, items: r.items.map(remember), redraw: draw };
+      lastSearch = st;
       draw();
+      altP.then(async (alt) => {
+        if (!alt || lastSearch !== st) return;
+        const a = await searchAll(q, store.state.settings, { alt, altOnly: true });
+        if (lastSearch !== st) return;
+        const ids = new Set(st.items.map((v) => v.id));
+        st.items.push(...a.items.filter((v) => !ids.has(v.id)).map(remember));
+        st.cursors = { ...st.cursors, ...a.cursors };
+        st.hasMore = Object.values(st.cursors).some((c) => c !== null);
+        st.filtered += a.filtered;
+        st.alt = alt;
+        st.redraw();
+      }).catch(() => { /* בלי תוספת */ });
     });
   }
+  if (lastSearch && lastSearch.q === q) lastSearch.redraw = draw; // המסך הנוכחי מתעדכן
   return wrap;
 }
 
 // תוצאות ספרי שמע / ספרים (מטמון לפי סוג ושאילתה — חזרה מהספר לא מחפשת שוב)
 let lastMedia = null;
 function renderMediaResults(type, q, wrap) {
-  wrap.append(h('p', { class: 'muted small' }, tr(type === 'audiobook' ? 'audioHint' : 'bookHint')));
+  wrap.append(h('p', { class: 'muted small' }, tr({ audiobook: 'audioHint', podcast: 'podcastHint' }[type] || 'bookHint')));
   if (!q) return wrap;
   const results = h('div', {});
   const status = h('div', {});
@@ -328,7 +418,8 @@ function renderMediaResults(type, q, wrap) {
   wrap.append(status, results, more);
   const draw = () => {
     const st = lastMedia;
-    fill(status, st.filtered ? h('p', { class: 'muted small' }, tr('filteredInfo', st.filtered)) : null,
+    fill(status, st.alt ? h('p', { class: 'muted small' }, tr('altInfo', st.alt)) : null,
+      st.filtered ? h('p', { class: 'muted small' }, tr('filteredInfo', st.filtered)) : null,
       st.error ? h('div', { class: 'notice warn small' }, tr('bookFailed')) : null);
     fill(results, st.items.length ? h('div', { class: 'cards' }, st.items.map((v) => videoCard(v))) : st.error ? null : h('p', { class: 'center muted' }, tr('noResults')));
     fill(more, st.next !== null && !st.loading ? h('button', { class: 'btn', type: 'button', onclick: load }, tr('loadMore')) : st.loading ? h('div', { class: 'spinner' }) : null);
@@ -338,7 +429,9 @@ function renderMediaResults(type, q, wrap) {
     if (!st.loading) {
       st.loading = (async () => {
         try {
-          const r = await searchMedia(type, q, store.state.settings, { page: st.page });
+          // ספרי שמע וספרים: בעמוד הראשון — המונח באנגלית ברקע (לא מעכב); בהמשך — עם העמוד
+          const r = await searchMedia(type, q, store.state.settings, { page: st.page, alt: st.alt || '' });
+          if (st.page === 0 && type !== 'podcast') addAlt(st);
           const ids = new Set(st.items.map((v) => v.id));
           st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
           st.filtered += r.filtered;
@@ -357,8 +450,23 @@ function renderMediaResults(type, q, wrap) {
     await st.loading;
     if (lastMedia === st && results.isConnected) draw();
   }
+  // תוצאות המונח באנגלית לעמוד הראשון (ספרי שמע וספרים)
+  function addAlt(st) {
+    altFor(q).then(async (alt) => {
+      if (!alt || lastMedia !== st) return;
+      const r = await searchMedia(type, alt, store.state.settings, { page: 0 });
+      if (lastMedia !== st) return;
+      const ids = new Set(st.items.map((v) => v.id));
+      st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
+      st.filtered += r.filtered;
+      st.alt = alt;
+      if (st.next === null && r.next !== null) st.next = 1;
+      if (!st.loading) st.redraw();
+    }).catch(() => { /* בלי תוספת */ });
+  }
+  if (lastMedia) lastMedia.redraw = draw;
   if (!lastMedia || lastMedia.type !== type || lastMedia.q !== q) {
-    lastMedia = { type, q, items: [], page: 0, next: 0, filtered: 0, error: false, loading: null };
+    lastMedia = { type, q, items: [], page: 0, next: 0, filtered: 0, error: false, loading: null, alt: null, redraw: draw };
     load();
   } else if (lastMedia.loading) {
     load();
@@ -646,6 +754,10 @@ function renderListen(id, params) {
   if (!book) return h('p', { class: 'center muted' }, '—');
   store.addHistory(book);
   const startCh = params.has('ch') ? Number(params.get('ch')) : null;
+  const startEp = params.get('ep'); // פרק פודקאסט — לפי המזהה
+  const isPodcast = book.kind === 'podcast';
+  const descBox = h('p', { class: 'desc' }, truncate(book.description, 600));
+  const epDesc = h('p', { class: 'muted small' });
 
   const audio = h('audio', { controls: true, preload: 'metadata', class: 'audio' });
   const nowTitle = h('b', {});
@@ -668,6 +780,10 @@ function renderListen(id, params) {
     if (c && audio.duration) store.setPosition(c.id, audio.currentTime, audio.duration);
   }
   // התקדמות הספר כולו: הפרק הנוכחי מתוך כולם; נלמד כשכל הפרקים נלמדו
+  function drawNowTitle() {
+    const c = chapterOf();
+    if (c) nowTitle.textContent = `${tr(isPodcast ? 'episode' : 'chapter')} ${cur + 1}/${chapters.length} — ${c.title}`;
+  }
   function updateBook() {
     const doneCount = chapters.filter((c) => store.getProgress(c.id)?.done).length;
     const all = chapters.length > 0 && doneCount === chapters.length;
@@ -687,7 +803,8 @@ function renderListen(id, params) {
     const p = store.getProgress(c.id);
     audio.onloadedmetadata = () => { if (p?.pos && !p.done && p.pos < audio.duration - 5) audio.currentTime = p.pos; };
     if (autoplay) audio.play().catch(() => {});
-    nowTitle.textContent = `${tr('chapter')} ${i + 1}/${chapters.length} — ${c.title}`;
+    drawNowTitle();
+    epDesc.textContent = truncate(c.description, 400);
     fill(chapterDl, downloadButton(c));
     updateBook();
     drawList();
@@ -739,7 +856,7 @@ function renderListen(id, params) {
 
   function drawList() {
     if (!chapters) return;
-    fill(listBox, h('h2', { style: 'margin-top:0' }, `${tr('chapters')} (${chapters.length})`),
+    fill(listBox, h('h2', { style: 'margin-top:0' }, `${tr(isPodcast ? 'episodes' : 'chapters')} (${chapters.length})`),
       chapters.map((c, i) => {
         const p = store.getProgress(c.id);
         const isCur = i === cur;
@@ -747,7 +864,7 @@ function renderListen(id, params) {
           h('span', { class: `num${p?.done ? ' ok' : isCur ? ' cur' : ''}` }, p?.done ? '✓' : String(i + 1)),
           h('div', { class: 'info', onclick: () => play(i) },
             h('b', {}, (isCur ? '▶ ' : '') + c.title),
-            h('span', { class: 'muted small' }, [downloads.isSaved(c.id) ? '⬇' : '', formatDuration(c.duration), p && !p.done && p.dur ? `${Math.round((p.pos / p.dur) * 100)}%` : ''].filter(Boolean).join(' · '))));
+            h('span', { class: 'muted small' }, [downloads.isSaved(c.id) ? '⬇' : '', c.date ? new Date(c.date).toLocaleDateString(store.state.settings.lang === 'en' ? 'en' : 'he-IL') : '', formatDuration(c.duration), p && !p.done && p.dur ? `${Math.round((p.pos / p.dur) * 100)}%` : ''].filter(Boolean).join(' · '))));
       }));
   }
 
@@ -757,7 +874,7 @@ function renderListen(id, params) {
     if (!c) return;
     const input = h('textarea', { placeholder: tr('notePlaceholder'), 'aria-label': tr('addNote') });
     const notes = store.notesFor(c.id);
-    fill(notesBox, h('h2', { style: 'margin-top:0' }, `📝 ${tr('notes')} — ${tr('chapter')} ${cur + 1}`),
+    fill(notesBox, h('h2', { style: 'margin-top:0' }, `📝 ${tr('notes')} — ${tr(isPodcast ? 'episode' : 'chapter')} ${cur + 1}`),
       notes.length ? notes.map((n) => h('div', { class: 'note' },
         n.t != null ? h('button', { class: 'btn btn-sm time', type: 'button', onclick: () => { audio.currentTime = n.t; audio.play().catch(() => {}); } }, formatDuration(n.t) || '0:00') : null,
         h('p', {}, n.text),
@@ -770,16 +887,30 @@ function renderListen(id, params) {
     if (disposed) return;
     if (!chapters.length) {
       // אין קבצי שמע (לא LibriVox) — הנגן של הארכיון
+      if (isPodcast) { fill(body, h('div', { class: 'notice warn' }, tr('noEpisodes'))); return; }
       fill(body, h('div', { class: 'player' }, h('iframe', { src: safeUrl(book.play.url), title: book.title, allowfullscreen: true, sandbox: 'allow-scripts allow-same-origin allow-presentation' })));
       return;
     }
     const prog = store.getProgress(book.id);
     const firstOpen = chapters.findIndex((c) => !store.getProgress(c.id)?.done);
-    const i = startCh !== null && chapters[startCh] ? startCh : prog?.pos >= 1 && chapters[prog.pos - 1] ? prog.pos - 1 : Math.max(0, firstOpen);
+    // פודקאסט: פרקים חדשים נוספים בראש הרשימה ומזיזים את המספור — ממשיכים בפרק האחרון ששמענו
+    // הפרק האחרון ששמענו; אם סיימנו אותו — הבא בתור (כמו המעבר האוטומטי בסוף פרק)
+    const lastHeard = () => {
+      let best = -1;
+      let at = 0;
+      chapters.forEach((c, j) => { const p = store.getProgress(c.id); if (p && (p.at || 0) > at) { at = p.at; best = j; } });
+      if (best < 0) return 0;
+      return store.getProgress(chapters[best].id).done && chapters[best + 1] ? best + 1 : best;
+    };
+    const epIndex = startEp ? chapters.findIndex((c) => c.id === startEp) : -1;
+    const i = epIndex >= 0 ? epIndex
+      : startCh !== null && chapters[startCh] ? startCh
+      : isPodcast ? lastHeard()
+        : prog?.pos >= 1 && chapters[prog.pos - 1] ? prog.pos - 1 : Math.max(0, firstOpen);
     fill(body,
-      h('div', { class: 'panel' }, nowTitle, audio, offlineNote, controls,
+      h('div', { class: 'panel' }, nowTitle, epDesc, audio, offlineNote, controls,
         h('div', { class: 'row', style: 'margin-top:8px' }, chapterDl,
-          downloads.available ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { let n = 0; chapters.forEach((c) => { if (downloads.enqueue(c) === 'queued') n++; }); toast(tr('bookQueued', n)); drawList(); } }, tr('saveBook')) : null),
+          downloads.available && !isPodcast ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { let n = 0; chapters.forEach((c) => { if (downloads.enqueue(c) === 'queued') n++; }); toast(tr('bookQueued', n)); drawList(); } }, tr('saveBook')) : null),
         h('p', { class: 'muted small' }, tr('bgAudioNote'))),
       listBox, notesBox);
     play(i, { autoplay: false });
@@ -787,8 +918,15 @@ function renderListen(id, params) {
 
   function load() {
     fill(body, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('loadingBook')));
-    fetchArchiveMetadata(book).then((meta) => {
-      chapters = parseAudioChapters(book, meta);
+    const loader = isPodcast
+      ? fetchPodcastEpisodes(book).then((feed) => {
+        if (feed.description && !book.description) { book.description = feed.description; descBox.textContent = truncate(feed.description, 600); }
+        return feed.episodes;
+      })
+      : fetchArchiveMetadata(book).then((meta) => parseAudioChapters(book, meta));
+    loader.then((list) => {
+      if (disposed) return;
+      chapters = list;
       store.setChapters(book.id, chapters);
       start();
     }).catch(() => {
@@ -796,7 +934,26 @@ function renderListen(id, params) {
       fill(body, h('div', { class: 'notice warn' }, tr('bookFailed')), h('button', { class: 'btn', type: 'button', onclick: load }, tr('retry')));
     });
   }
-  if (chapters) setTimeout(start, 0); else load();
+  // פודקאסט מתעדכן: מציגים את הרשימה השמורה מיד (גם בלי רשת), ומרעננים מהפיד ברקע
+  if (chapters) {
+    setTimeout(start, 0);
+    if (isPodcast) {
+      fetchPodcastEpisodes(book).then((feed) => {
+        if (disposed || !feed.episodes.length) return;
+        const changed = feed.episodes.length !== chapters.length || feed.episodes[0]?.id !== chapters[0]?.id;
+        if (!changed) return;
+        const curId = chapterOf()?.id;
+        const j = feed.episodes.findIndex((c) => c.id === curId);
+        if (curId && j < 0) return; // הפרק שמתנגן ירד מהפיד — לא מחליפים באמצע
+        chapters = feed.episodes;
+        store.setChapters(book.id, chapters);
+        if (j >= 0) cur = j;
+        drawNowTitle();
+        if (cur >= 0) updateBook();
+        drawList();
+      }).catch(() => { /* בלי רשת — הרשימה השמורה */ });
+    }
+  } else load();
 
   dlWatchers.add(drawList);
   cleanupView = () => {
@@ -808,7 +965,7 @@ function renderListen(id, params) {
     audio.load();
   };
 
-  return [mediaHead(book), mediaActions(book, drawList), h('p', { class: 'desc' }, truncate(book.description, 600)), body];
+  return [mediaHead(book), mediaActions(book, drawList), descBox, body];
 }
 
 // ---------- קורא ספרים ----------
@@ -940,8 +1097,10 @@ function renderRead(id) {
   return [mediaHead(book), mediaActions(book), body];
 }
 
-function renderSettings() {
+function renderSettings(params = new URLSearchParams()) {
   const s = store.state.settings;
+  const focus = params.get('focus') || '';
+  if (focus) setTimeout(() => document.getElementById(`src-${focus}`)?.scrollIntoView({ block: 'center' }), 0);
   const langSel = h('select', { class: 'input', id: 'langSel' }, h('option', { value: 'he' }, 'עברית'), h('option', { value: 'en' }, 'English'));
   langSel.value = s.lang;
   langSel.addEventListener('change', () => { store.setSetting('lang', langSel.value); applyLang(); route(); });
@@ -952,9 +1111,13 @@ function renderSettings() {
     toggle.addEventListener('change', () => { store.updateSource(src.id, { enabled: toggle.checked }); lastSearch = null; });
     const keyInput = type.needsKey ? h('input', { class: 'input', type: 'password', value: src.key || '', placeholder: tr('apiKey'), 'aria-label': tr('apiKey'), autocomplete: 'off' }) : null;
     if (keyInput) keyInput.addEventListener('change', () => { store.updateSource(src.id, { key: keyInput.value, enabled: !!keyInput.value.trim() || toggle.checked }); lastSearch = null; route(); });
-    return h('div', { class: 'source' }, toggle,
+    return h('div', { class: 'source', id: `src-${src.id}` }, toggle,
       h('div', { class: 'info' }, h('b', {}, src.name), h('div', { class: 'muted small' }, type.label[s.lang] || type.label.he, src.url && !src.builtin ? ` · ${src.url}` : ''),
-        keyInput ? [keyInput, h('div', { class: 'muted small' }, tr('apiKeyHint'))] : null),
+        keyInput ? [keyInput, h('div', { class: 'muted small' }, tr('apiKeyHint')),
+          src.type === 'youtube' ? h('details', { class: 'howto', open: focus === 'youtube' && !sourceReady(src) },
+            h('summary', {}, tr('youtubeHowTo')),
+            h('ol', {}, tr('youtubeSteps').map((step) => h('li', {}, step))),
+            h('a', { class: 'btn btn-sm', href: 'https://console.cloud.google.com/apis/library/youtube.googleapis.com', target: '_blank', rel: 'noopener noreferrer' }, '↗ Google Cloud Console')) : null] : null),
       src.builtin ? h('span', { class: 'badge' }, tr('builtin')) : h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: () => { store.removeSource(src.id); lastSearch = null; route(); } }, tr('removeSource')));
   }));
 
@@ -982,6 +1145,8 @@ function renderSettings() {
   strict.addEventListener('change', () => { store.setSetting('strict', strict.checked); lastSearch = null; lastMedia = null; });
   const extra = h('textarea', { id: 'extraBlock' }, s.extraBlock.join(', '));
   extra.addEventListener('change', () => { store.setSetting('extraBlock', parseWordList(extra.value)); lastSearch = null; lastMedia = null; });
+  const crossLang = h('input', { type: 'checkbox', class: 'switch', id: 'crossLang', checked: s.crossLang !== false });
+  crossLang.addEventListener('change', () => { store.setSetting('crossLang', crossLang.checked); lastSearch = null; lastMedia = null; });
   const langsIn = h('input', { class: 'input', id: 'contentLangs', value: s.contentLangs.join(', '), dir: 'ltr', placeholder: 'en, he' });
   langsIn.addEventListener('change', () => {
     store.setSetting('contentLangs', parseWordList(langsIn.value).map((x) => x.toLowerCase()).filter((x) => /^[a-z]{2,3}$/.test(x)).slice(0, 5));
@@ -1029,6 +1194,7 @@ function renderSettings() {
       h('label', { class: 'check', for: 'strict' }, strict, tr('strict')),
       h('label', { class: 'field', for: 'extraBlock' }, tr('extraBlock'), extra),
       h('label', { class: 'field', for: 'contentLangs' }, tr('contentLangs'), langsIn),
+      h('label', { class: 'check', for: 'crossLang' }, crossLang, tr('crossLang')),
       h('div', { class: 'notice warn small' }, tr('filterNote'))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '📚 ' + tr('booksSettings')),
       h('label', { class: 'check', for: 'bookScanned' }, scanned, tr('bookScanned'))),
@@ -1122,7 +1288,7 @@ function route() {
     case 'watch': content = renderWatch(id, params); break;
     case 'listen': content = renderListen(id, params); break;
     case 'read': content = renderRead(id); break;
-    case 'settings': content = renderSettings(); break;
+    case 'settings': content = renderSettings(params); break;
     default: content = renderHome();
   }
   fill(view, ...[content].flat(Infinity).filter(Boolean));

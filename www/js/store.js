@@ -20,6 +20,7 @@ export function defaultState() {
       ...DOWNLOAD_DEFAULTS,
       bookScanned: true, // בחיפוש ספרים — גם ספרים סרוקים (כולל עברית), לא רק Gutenberg
       readerFont: 19,    // גודל הגופן בקורא
+      crossLang: true,   // בחיפוש בעברית — גם המונח באנגלית (מוויקיפדיה)
     },
     courses: [],
     favorites: [],
@@ -42,9 +43,9 @@ export const DL_STATUSES = ['queued', 'waiting', 'downloading', 'done', 'error']
 
 // תמונת מצב של סרטון לשמירה — רק השדות שהממשק צריך
 export function snapshot(v) {
-  const { id, kind, sourceId, sourceType, sourceName, title, author, duration, thumb, play, pageUrl, nativeId, host, resolvable, description, bookId, index, size, gutenberg, lang } = v;
+  const { id, kind, sourceId, sourceType, sourceName, title, author, duration, thumb, play, pageUrl, nativeId, host, resolvable, description, bookId, index, size, gutenberg, lang, date } = v;
   return {
-    id, kind, sourceId, sourceType, sourceName, title, author, duration, thumb, nativeId, host, resolvable, pageUrl, bookId, index, size, gutenberg, lang,
+    id, kind, sourceId, sourceType, sourceName, title, author, duration, thumb, nativeId, host, resolvable, pageUrl, bookId, index, size, gutenberg, lang, date,
     description: String(description || '').slice(0, 600),
     play: { kind: ['video', 'audio'].includes(play?.kind) ? play.kind : 'iframe', url: String(play?.url || '') },
   };
@@ -74,6 +75,7 @@ export function normalizeState(raw) {
       bookScanned: s.bookScanned === undefined ? true : !!s.bookScanned,
       readerFont: Number.isFinite(Number(s.readerFont)) ? Math.min(32, Math.max(14, Number(s.readerFont))) : 19,
       sleepMin: Number(s.sleepMin) || 0,
+      crossLang: s.crossLang === undefined ? true : !!s.crossLang,
     },
     courses: Array.isArray(raw.courses)
       ? raw.courses.filter((c) => c && typeof c.id === 'string' && Array.isArray(c.lessons))
@@ -368,7 +370,7 @@ export function continueWatching(state, limit = 10) {
     .filter((h) => {
       const p = state.progress[h.video.id];
       // ספר / ספר שמע: pos הוא עמוד / פרק; סרטון: שניות
-      return p && !p.done && (h.video.kind === 'book' || h.video.kind === 'audiobook' ? p.pos >= 1 : p.pos > 5);
+      return p && !p.done && (['book', 'audiobook', 'podcast'].includes(h.video.kind) ? p.pos >= 1 : p.pos > 5);
     })
     .slice(0, limit)
     .map((h) => h.video);
