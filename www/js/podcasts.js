@@ -1,6 +1,6 @@
 // פודקאסטים לימודיים: חיפוש בספריית הפודקאסטים של Apple (iTunes Search API — חינמי, בלי מפתח),
 // והפרקים עצמם מה-RSS של הפודקאסט. טהור — בלי fetch ובלי DOM, נבדק ב-tests/podcasts.test.mjs.
-import { stripHtml, parseDuration, safeUrl } from './util.js';
+import { stripHtml, parseDuration, safeUrl, isHebrew } from './util.js';
 import { PAGE_SIZE } from './sources.js';
 
 // קטגוריות לימודיות של Apple (מזהי הקטגוריה הראשית; תת-קטגוריה מגיעה תמיד עם הראשית שלה)
@@ -18,11 +18,9 @@ export const PODCAST_BLOCK_GENRES = {
 export const MAX_EPISODES = 300;
 const MAX_FETCH = 200; // תקרת התוצאות של iTunes Search
 
-const HEBREW = /[֐-׿]/;
-
 // החנות לפי שפת החיפוש: עברית ← ישראל (שם הפודקאסטים בעברית), אחרת לפי שפת התוכן המועדפת
 function country(query, langs = []) {
-  if (HEBREW.test(query) || langs[0] === 'he') return 'il';
+  if (isHebrew(query) || langs[0] === 'he') return 'il';
   return { fr: 'fr', de: 'de', es: 'es', ru: 'ru', ar: 'eg' }[langs[0]] || 'us';
 }
 
@@ -53,10 +51,12 @@ export function parsePodcastResults(json, page = 0) {
   const all = Array.isArray(json?.results) ? json.results : [];
   const items = [];
   let filtered = 0;
-  for (const r of all) {
+  // כל עמוד מביא מחדש גם את התוצאות של העמודים הקודמים — סופרים רק את הסינון בחלק החדש
+  const prevRequested = Math.min(MAX_FETCH, page * PAGE_SIZE * 2);
+  all.forEach((r, i) => {
     const feed = safeUrl(r?.feedUrl);
-    if (!r || r.kind !== 'podcast' || !feed || !r.collectionId) continue;
-    if (!isEducationalPodcast(r)) { filtered++; continue; }
+    if (!r || r.kind !== 'podcast' || !feed || !r.collectionId) return;
+    if (!isEducationalPodcast(r)) { if (i >= prevRequested) filtered++; return; }
     items.push({
       id: `podcast:${r.collectionId}`,
       kind: 'podcast',
@@ -75,7 +75,7 @@ export function parsePodcastResults(json, page = 0) {
       tags: Array.isArray(r.genres) ? r.genres.map(String).filter((g) => g !== 'Podcasts') : [],
       count: Number(r.trackCount) || 0,
     });
-  }
+  });
   const start = page * PAGE_SIZE;
   const slice = items.slice(start, start + PAGE_SIZE);
   // יש עוד: עוד פריטים מעבר לעמוד, או ש-iTunes החזיר את המקסימום ואולי יש עוד

@@ -1,6 +1,6 @@
 // מקורות הסרטונים: כל סוג יודע לבנות כתובת חיפוש ולפרק את התשובה
 // לצורה אחידה. טהור — בלי fetch, נבדק ב-tests/sources.test.mjs.
-import { safeUrl, hostOf, normalizeBase, stripHtml, parseDuration, parseIsoDuration } from './util.js';
+import { safeUrl, isHebrew, hostOf, normalizeBase, stripHtml, parseDuration, parseIsoDuration } from './util.js';
 
 export const PAGE_SIZE = 12;
 
@@ -118,7 +118,7 @@ export function buildSearchUrl(source, query, { cursor = 0, langs = [], pageSize
         videoEmbeddable: 'true',
         maxResults: pageSize,
         q,
-        relevanceLanguage: langs[0] || (/[\u0590-\u05FF]/.test(q) ? 'he' : undefined),
+        relevanceLanguage: langs[0] || (isHebrew(q) ? 'he' : undefined),
         pageToken: typeof cursor === 'string' ? cursor : undefined,
         key: String(source.key || '').trim(),
       });

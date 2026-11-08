@@ -11,6 +11,11 @@ export function safeUrl(u) {
   }
 }
 
+// יש אותיות עבריות בטקסט (חיפוש בעברית)
+export function isHebrew(s) {
+  return /[\u0590-\u05FF]/.test(String(s || ''));
+}
+
 export function hostOf(u) {
   try { return new URL(u).host; } catch { return ''; }
 }

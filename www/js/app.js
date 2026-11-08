@@ -233,9 +233,13 @@ function courseCard(c) {
 // מטמון לפי שאילתה: מעבר בין סוגי התוכן / חזרה מנגן לא מבקש שוב
 const wikiCache = new Map();
 function wikiFor(q) {
-  const key = `${store.state.settings.lang}|${q}`;
+  const s = store.state.settings;
+  const key = `${s.lang}|${s.extraBlock.join(',')}|${q}`;
   if (!wikiCache.has(key)) {
-    wikiCache.set(key, fetchWikiSummary(q, store.state.settings));
+    const p = fetchWikiSummary(q, s);
+    wikiCache.set(key, p);
+    // אין ערך / אין רשת — לא נשמר: בחיפוש הבא מנסים שוב
+    p.then((w) => { if (!w && wikiCache.get(key) === p) wikiCache.delete(key); });
     if (wikiCache.size > 30) wikiCache.delete(wikiCache.keys().next().value);
   }
   return wikiCache.get(key);
@@ -378,12 +382,28 @@ function renderSearch(params) {
     fill(results, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('searching')));
     const token = {};
     lastSearch = token;
-    searchAll(q, store.state.settings, { alt: altFor(q) }).then((r) => {
+    // קודם התוצאות בשפת החיפוש; המונח באנגלית (ויקיפדיה + עוד חיפוש) נוסף כשהוא מגיע — לא מעכב
+    const altP = altFor(q);
+    searchAll(q, store.state.settings).then((r) => {
       if (lastSearch !== token) return; // חיפוש חדש החליף אותו
-      lastSearch = { q, ...r, items: r.items.map(remember) };
+      const st = { q, ...r, alt: null, items: r.items.map(remember), redraw: draw };
+      lastSearch = st;
       draw();
+      altP.then(async (alt) => {
+        if (!alt || lastSearch !== st) return;
+        const a = await searchAll(q, store.state.settings, { alt, altOnly: true });
+        if (lastSearch !== st) return;
+        const ids = new Set(st.items.map((v) => v.id));
+        st.items.push(...a.items.filter((v) => !ids.has(v.id)).map(remember));
+        st.cursors = { ...st.cursors, ...a.cursors };
+        st.hasMore = Object.values(st.cursors).some((c) => c !== null);
+        st.filtered += a.filtered;
+        st.alt = alt;
+        st.redraw();
+      }).catch(() => { /* בלי תוספת */ });
     });
   }
+  if (lastSearch && lastSearch.q === q) lastSearch.redraw = draw; // המסך הנוכחי מתעדכן
   return wrap;
 }
 
@@ -409,9 +429,9 @@ function renderMediaResults(type, q, wrap) {
     if (!st.loading) {
       st.loading = (async () => {
         try {
-          // ספרי שמע וספרים: גם המונח באנגלית. פודקאסטים — יש הרבה בעברית, אין צורך
-          if (st.alt === undefined) st.alt = type === 'podcast' ? null : await altFor(q);
+          // ספרי שמע וספרים: בעמוד הראשון — המונח באנגלית ברקע (לא מעכב); בהמשך — עם העמוד
           const r = await searchMedia(type, q, store.state.settings, { page: st.page, alt: st.alt || '' });
+          if (st.page === 0 && type !== 'podcast') addAlt(st);
           const ids = new Set(st.items.map((v) => v.id));
           st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
           st.filtered += r.filtered;
@@ -430,8 +450,23 @@ function renderMediaResults(type, q, wrap) {
     await st.loading;
     if (lastMedia === st && results.isConnected) draw();
   }
+  // תוצאות המונח באנגלית לעמוד הראשון (ספרי שמע וספרים)
+  function addAlt(st) {
+    altFor(q).then(async (alt) => {
+      if (!alt || lastMedia !== st) return;
+      const r = await searchMedia(type, alt, store.state.settings, { page: 0 });
+      if (lastMedia !== st) return;
+      const ids = new Set(st.items.map((v) => v.id));
+      st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
+      st.filtered += r.filtered;
+      st.alt = alt;
+      if (st.next === null && r.next !== null) st.next = 1;
+      if (!st.loading) st.redraw();
+    }).catch(() => { /* בלי תוספת */ });
+  }
+  if (lastMedia) lastMedia.redraw = draw;
   if (!lastMedia || lastMedia.type !== type || lastMedia.q !== q) {
-    lastMedia = { type, q, items: [], page: 0, next: 0, filtered: 0, error: false, loading: null, alt: undefined };
+    lastMedia = { type, q, items: [], page: 0, next: 0, filtered: 0, error: false, loading: null, alt: null, redraw: draw };
     load();
   } else if (lastMedia.loading) {
     load();
@@ -719,6 +754,7 @@ function renderListen(id, params) {
   if (!book) return h('p', { class: 'center muted' }, '—');
   store.addHistory(book);
   const startCh = params.has('ch') ? Number(params.get('ch')) : null;
+  const startEp = params.get('ep'); // פרק פודקאסט — לפי המזהה
   const isPodcast = book.kind === 'podcast';
   const descBox = h('p', { class: 'desc' }, truncate(book.description, 600));
   const epDesc = h('p', { class: 'muted small' });
@@ -744,6 +780,10 @@ function renderListen(id, params) {
     if (c && audio.duration) store.setPosition(c.id, audio.currentTime, audio.duration);
   }
   // התקדמות הספר כולו: הפרק הנוכחי מתוך כולם; נלמד כשכל הפרקים נלמדו
+  function drawNowTitle() {
+    const c = chapterOf();
+    if (c) nowTitle.textContent = `${tr(isPodcast ? 'episode' : 'chapter')} ${cur + 1}/${chapters.length} — ${c.title}`;
+  }
   function updateBook() {
     const doneCount = chapters.filter((c) => store.getProgress(c.id)?.done).length;
     const all = chapters.length > 0 && doneCount === chapters.length;
@@ -763,7 +803,7 @@ function renderListen(id, params) {
     const p = store.getProgress(c.id);
     audio.onloadedmetadata = () => { if (p?.pos && !p.done && p.pos < audio.duration - 5) audio.currentTime = p.pos; };
     if (autoplay) audio.play().catch(() => {});
-    nowTitle.textContent = `${tr(isPodcast ? 'episode' : 'chapter')} ${i + 1}/${chapters.length} — ${c.title}`;
+    drawNowTitle();
     epDesc.textContent = truncate(c.description, 400);
     fill(chapterDl, downloadButton(c));
     updateBook();
@@ -854,13 +894,17 @@ function renderListen(id, params) {
     const prog = store.getProgress(book.id);
     const firstOpen = chapters.findIndex((c) => !store.getProgress(c.id)?.done);
     // פודקאסט: פרקים חדשים נוספים בראש הרשימה ומזיזים את המספור — ממשיכים בפרק האחרון ששמענו
+    // הפרק האחרון ששמענו; אם סיימנו אותו — הבא בתור (כמו המעבר האוטומטי בסוף פרק)
     const lastHeard = () => {
       let best = -1;
       let at = 0;
-      chapters.forEach((c, j) => { const p = store.getProgress(c.id); if (p && !p.done && (p.at || 0) > at) { at = p.at; best = j; } });
-      return best >= 0 ? best : 0;
+      chapters.forEach((c, j) => { const p = store.getProgress(c.id); if (p && (p.at || 0) > at) { at = p.at; best = j; } });
+      if (best < 0) return 0;
+      return store.getProgress(chapters[best].id).done && chapters[best + 1] ? best + 1 : best;
     };
-    const i = startCh !== null && chapters[startCh] ? startCh
+    const epIndex = startEp ? chapters.findIndex((c) => c.id === startEp) : -1;
+    const i = epIndex >= 0 ? epIndex
+      : startCh !== null && chapters[startCh] ? startCh
       : isPodcast ? lastHeard()
         : prog?.pos >= 1 && chapters[prog.pos - 1] ? prog.pos - 1 : Math.max(0, firstOpen);
     fill(body,
@@ -904,6 +948,8 @@ function renderListen(id, params) {
         chapters = feed.episodes;
         store.setChapters(book.id, chapters);
         if (j >= 0) cur = j;
+        drawNowTitle();
+        if (cur >= 0) updateBook();
         drawList();
       }).catch(() => { /* בלי רשת — הרשימה השמורה */ });
     }

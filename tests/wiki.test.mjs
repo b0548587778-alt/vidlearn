@@ -94,3 +94,18 @@ test('ספרי שמע: גם המונח באנגלית (LibriVox כמעט כול�
   const r = await searchMedia('audiobook', 'היסטוריה', settings, { fetchImpl, alt: 'History' });
   assert.deepEqual(r.items.map((v) => v.id), ['audio:lv1']);
 });
+
+test('סקירה: דף שם פרטי בעברית לא מוצג כערך', () => {
+  assert.equal(parseWikiSummary(pages([page({ extract: 'דוד הוא שם פרטי עברי נפוץ, שמקורו בתנ"ך ובדמותו של דוד המלך.' })]), 'he', 'דוד'), null);
+  assert.ok(parseWikiSummary(pages([page({ extract: 'דוד המלך היה מלך ישראל השני, אחרי שאול, ומייסד בית דוד בירושלים.' })]), 'he', 'דוד'));
+});
+
+test('סקירה: altOnly — רק החיפוש באנגלית (העברית כבר מוצגת)', async () => {
+  const settings = defaultState().settings;
+  const asked = [];
+  const fetchImpl = async (url) => { asked.push(decodeURIComponent(url)); return archive([{ identifier: 'en1', title: 'Mathematics lesson' }]); };
+  const r = await searchAll('מתמטיקה', settings, { fetchImpl, alt: 'Mathematics', altOnly: true });
+  assert.ok(asked.every((u) => !u.includes('מתמטיקה')));
+  assert.ok(Object.keys(r.cursors).every((k) => k.endsWith('~alt')));
+  assert.ok(r.items.some((v) => v.id === 'archive:en1'));
+});

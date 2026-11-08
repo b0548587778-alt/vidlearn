@@ -36,11 +36,12 @@ export const ALT_SUFFIX = '~alt';
 const altEligible = (s) => s.type !== 'youtube';
 
 // cursors: { [taskId]: cursor } — לעמוד הבא; משימה שסיימה (null) מדולגת.
-// alt: המונח באנגלית (מחרוזת, או Promise שלה — כדי שהחיפוש המקורי לא יחכה לוויקיפדיה)
-export async function searchAll(query, settings, { cursors = null, alt = null, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
+// alt: המונח באנגלית (מחרוזת או Promise שלה)
+// altOnly: רק החיפוש הנוסף (הממשק מציג קודם את תוצאות העברית ומוסיף את האנגלית כשהן מגיעות)
+export async function searchAll(query, settings, { cursors = null, alt = null, altOnly = false, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
   const ready = settings.sources.filter(sourceReady);
   const tasks = [
-    ...ready.map((s) => ({ id: s.id, source: s, alt: false })),
+    ...(altOnly ? [] : ready.map((s) => ({ id: s.id, source: s, alt: false }))),
     ...(alt ? ready.filter(altEligible).map((s) => ({ id: s.id + ALT_SUFFIX, source: s, alt: true })) : []),
   ].filter((t) => !cursors || (t.id in cursors && cursors[t.id] !== null));
   const extraBlock = settings.extraBlock || [];
@@ -170,7 +171,9 @@ export async function fetchWikiArticle(w, { fetchImpl = fetch } = {}) {
 
 // ---------- פודקאסטים ----------
 export async function fetchPodcastEpisodes(podcast, { fetchImpl = fetch } = {}) {
-  const xml = await getJson(safeUrl(podcast.play?.url), fetchImpl, 15000, { text: true });
+  const url = safeUrl(podcast.play?.url);
+  if (!url) throw new Error('no-feed');
+  const xml = await getJson(url, fetchImpl, 15000, { text: true });
   if (xml.length > 15 * 1024 * 1024) throw new Error('too-big');
   return parsePodcastFeed(podcast, xml);
 }

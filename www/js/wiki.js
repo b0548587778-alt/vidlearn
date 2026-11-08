@@ -1,20 +1,18 @@
 // ערך מוויקיפדיה לנושא החיפוש: תקציר בראש התוצאות, קריאת הערך המלא באפליקציה,
 // והמונח המקביל באנגלית (קישור בין-לשוני) — כדי לחפש גם במקורות שכמעט אין בהם עברית.
 // טהור — בונה כתובות ומפרק תשובות; נבדק ב-tests/wiki.test.mjs.
-import { safeUrl } from './util.js';
-
-const HEBREW = /[֐-׿]/;
+import { safeUrl, isHebrew } from './util.js';
 
 // שפת הוויקיפדיה לחיפוש: לפי האותיות בשאילתה, אחרת שפת הממשק
 export function wikiLang(query, uiLang = 'he') {
-  if (HEBREW.test(query)) return 'he';
+  if (isHebrew(query)) return 'he';
   if (/[؀-ۿ]/.test(query)) return 'ar';
   if (/[Ѐ-ӿ]/.test(query)) return 'ru';
   return /[a-z]/i.test(query) ? 'en' : uiLang;
 }
 
 export function isHebrewQuery(q) {
-  return HEBREW.test(String(q || ''));
+  return isHebrew(q);
 }
 
 // "שיעור במתמטיקה" ← "מתמטיקה": מילות לימוד כלליות מפריעות למציאת הערך
@@ -35,7 +33,7 @@ export function topicOf(query) {
 export function topicVariants(query) {
   const t = topicOf(query);
   const out = [t];
-  if (HEBREW.test(t)) {
+  if (isHebrew(t)) {
     const stripped = t.split(' ').map((w) => (w.length > 3 ? w.replace(/^(ו?ה|ו?ב|ו?ל|ו?מ|ש|ו|כ)(?=[\u05D0-\u05EA]{3})/, '') : w)).join(' ');
     if (stripped !== t) out.push(stripped);
   }
@@ -84,7 +82,8 @@ export function parseWikiSummary(json, lang = 'he', query = '') {
   if (!p || p.missing || !p.title) return null;
   const extract = String(p.extract || '').trim();
   if (extract.length < 40) return null; // דף פירושונים / ריק
-  if (/may refer to:|יכול להתייחס ל|^.{0,80}\bהוא שם\b/.test(extract.slice(0, 200))) return null;
+  // דף פירושונים / דף שם פרטי (\b של JS לא מכיר אותיות עבריות — לכן (^|\s))
+  if (/may refer to:|יכול להתייחס ל|(^|\s)הוא שם (פרטי|משפחה)|^\S+ הוא שם(\s|$)/.test(extract.slice(0, 200))) return null;
   const other = Array.isArray(p.langlinks) ? p.langlinks.find((l) => l && (l.title || l['*'])) : null;
   return {
     title: String(p.title),

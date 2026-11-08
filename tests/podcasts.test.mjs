@@ -91,3 +91,23 @@ test('searchMedia podcast: סינון מילים אסורות מעל הקטגו�
   assert.deepEqual(r.items.map((v) => v.id), ['podcast:1']);
   assert.equal(r.filtered, 1);
 });
+
+test('סקירה: קישור לפרק פודקאסט לפי מזהה (לא לפי מיקום שמשתנה)', () => {
+  assert.equal(itemHash({ kind: 'chapter', bookId: 'podcast:1', id: 'podcast:1#ep-2', index: 0 }), '#/listen/podcast%3A1?ep=podcast%3A1%23ep-2');
+  assert.equal(itemHash({ kind: 'chapter', bookId: 'audio:x', id: 'audio:x#3', index: 2 }), '#/listen/audio%3Ax?ch=2');
+});
+
+test('סקירה: מספר המסוננים נספר רק בחלק החדש של כל עמוד', () => {
+  const results = Array.from({ length: 48 }, (_, i) => pod({ collectionId: i + 1, genreIds: i % 4 === 0 ? ['1303'] : ['1487'] }));
+  const p0 = parsePodcastResults({ results: results.slice(0, 24) }, 0);
+  const p1 = parsePodcastResults({ results }, 1);
+  assert.equal(p0.filtered, 6);
+  assert.equal(p1.filtered, 6, 'רק 24 החדשים');
+});
+
+test('סקירה: פודקאסט בלי פיד https ← שגיאה, לא בקשה לכתובת ריקה', async () => {
+  const { fetchPodcastEpisodes } = await import('../www/js/search.js');
+  let called = false;
+  await assert.rejects(fetchPodcastEpisodes({ id: 'podcast:1', play: { url: 'http://x/rss' } }, { fetchImpl: async () => { called = true; } }), /no-feed/);
+  assert.equal(called, false);
+});

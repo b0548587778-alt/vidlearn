@@ -220,6 +220,8 @@ export function isMediaItem(v) {
 // כתובת המסך של פריט, לפי סוגו
 export function itemHash(v, courseId) {
   const c = courseId ? `?course=${encodeURIComponent(courseId)}` : '';
+  // פרק פודקאסט — לפי המזהה: פרקים חדשים בראש הפיד מזיזים את המספור
+  if (v.kind === 'chapter' && String(v.bookId).startsWith('podcast:')) return `#/listen/${encodeURIComponent(v.bookId)}?ep=${encodeURIComponent(v.id)}`;
   if (v.kind === 'chapter') return `#/listen/${encodeURIComponent(v.bookId)}?ch=${Number(v.index) || 0}`;
   if (v.kind === 'audiobook' || v.kind === 'podcast') return `#/listen/${encodeURIComponent(v.id)}${c}`;
   if (v.kind === 'book') return `#/read/${encodeURIComponent(v.id)}${c}`;
