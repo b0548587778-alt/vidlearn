@@ -31,6 +31,10 @@ jobs:
       - name: Tests
         run: npm test
 
+      # מספר הגרסה בתוך האפליקציה — כדי לדעת איזו גרסה מותקנת בטלפון
+      - name: Stamp version
+        run: echo "export const VERSION = 'build-${{ github.run_number }}';" > www/js/version.js
+
       - name: Create Android project
         run: |
           npx cap add android

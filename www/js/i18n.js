@@ -2,7 +2,7 @@
 export const STRINGS = {
   he: {
     appName: 'VidLearn',
-    tagline: 'סרטוני למידה, ספרי שמע וספרים — מסודרים ללימוד',
+    tagline: 'סרטוני למידה, פודקאסטים, ספרי שמע וספרים — מסודרים ללימוד',
     home: 'בית', search: 'חיפוש', library: 'הספרייה שלי', settings: 'הגדרות',
     searchPlaceholder: 'מה תרצו ללמוד היום?', searchBtn: 'חיפוש',
     subjects: 'תחומי לימוד', continueWatching: 'המשך לצפות', myCourses: 'הקורסים שלי',
@@ -72,7 +72,7 @@ export const STRINGS = {
     bookScanned: 'בחיפוש ספרים — גם ספרים סרוקים (כולל ספרים בעברית), לא רק Gutenberg',
     booksSettings: 'ספרים וספרי שמע', continueLearning: 'המשך מאיפה שעצרת',
     // פודקאסטים
-    podcasts: 'פודקאסטים', searchPodcasts: 'חיפוש פודקאסט לימודי',
+    version: 'גרסה', podcasts: 'פודקאסטים', searchPodcasts: 'חיפוש פודקאסט לימודי',
     podcastHint: 'פודקאסטים לימודיים מספריית הפודקאסטים של Apple — הרבה בעברית (היסטוריה, מדע, תנ"ך…). רק קטגוריות לימודיות, בלי תוכן בוטה.',
     episode: 'פרק', episodes: 'פרקים', noEpisodes: 'לא נמצאו פרקים להאזנה בפודקאסט הזה.',
     // ויקיפדיה
@@ -160,7 +160,7 @@ export const STRINGS = {
     readingOffline: '📴 Reading from the phone — no internet', listenOffline: '📴 Playing from the phone',
     bookScanned: 'When searching books — include scanned books, not only Project Gutenberg',
     booksSettings: 'Books & audiobooks', continueLearning: 'Continue where you left off',
-    podcasts: 'Podcasts', searchPodcasts: 'Search learning podcasts',
+    version: 'Version', podcasts: 'Podcasts', searchPodcasts: 'Search learning podcasts',
     podcastHint: 'Learning podcasts from the Apple Podcasts directory. Only educational categories, no explicit content.',
     episode: 'Episode', episodes: 'Episodes', noEpisodes: 'No playable episodes found in this podcast.',
     wikipedia: 'Wikipedia', wikiReadFull: '📖 Read the full article', wikiClose: 'Close article', wikiFailed: 'Could not load the article.',
