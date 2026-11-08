@@ -111,6 +111,11 @@ export const STRINGS = {
     ],
     googleAppId: 'שם החבילה וטביעת SHA-1 (להעתקה):',
     copy: 'העתקה', copied: 'הועתק',
+    googleDeleteRemote: 'מחיקת הנתונים מ-Drive',
+    googleDeleteConfirm: 'למחוק את קובץ הסנכרון מ-Google Drive ולהתנתק? הנתונים בטלפון הזה נשארים.',
+    googleDeleted: 'הנתונים נמחקו מ-Drive והתנתקתם.',
+    googleDeleteFailed: 'המחיקה נכשלה — נסו שוב.',
+    privacyPolicy: 'מדיניות פרטיות',
     youtubeHowTo: 'איך מחברים את יוטיוב?',
     youtubeSteps: [
       'נכנסים ל-Google Cloud Console (כפתור למטה) עם חשבון Google.',
@@ -226,6 +231,11 @@ export const STRINGS = {
     ],
     googleAppId: 'Package name and SHA-1 fingerprint (to copy):',
     copy: 'Copy', copied: 'Copied',
+    googleDeleteRemote: 'Delete data from Drive',
+    googleDeleteConfirm: 'Delete the sync file from Google Drive and sign out? Data on this phone stays.',
+    googleDeleted: 'Data deleted from Drive and signed out.',
+    googleDeleteFailed: 'Delete failed — try again.',
+    privacyPolicy: 'Privacy policy',
     youtubeHowTo: 'How to connect YouTube?',
     youtubeSteps: [
       'Open Google Cloud Console (button below) with a Google account.',
