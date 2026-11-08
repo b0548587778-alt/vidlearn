@@ -305,13 +305,19 @@ export function buildResolveUrl(v) {
 }
 
 // ← כתובת mp4 ישירה, או '' (ואז נשארים עם הנגן המוטמע)
-export function parseResolve(v, json) {
+// quality: 'normal' (עד 720p) לצפייה ולהורדה רגילה, 'low' (עד 480p / 512kb) לחיסכון במקום
+export function parseResolve(v, json, quality = 'normal') {
   if (!json || typeof json !== 'object') return '';
+  const low = quality === 'low';
   if (v.sourceType === 'archive') {
     const files = Array.isArray(json.files) ? json.files : [];
     const mp4 = files.filter((f) => f && typeof f.name === 'string' && /\.mp4$/i.test(f.name));
     if (!mp4.length) return '';
-    const rank = (f) => (/512kb/i.test(f.name) || /512Kb/.test(f.format || '') ? 0 : f.source === 'derivative' ? 1 : 2);
+    const is512 = (f) => /512kb/i.test(f.name) || /512kb/i.test(f.format || '');
+    // רגיל: נגזרת h.264 (איכות טובה, גודל סביר) ← 512kb ← מקור; חסכוני: 512kb קודם
+    const rank = (f) => (low
+      ? (is512(f) ? 0 : 1)
+      : (!is512(f) && f.source === 'derivative' ? 0 : is512(f) ? 1 : 2));
     mp4.sort((a, b) => rank(a) - rank(b) || (Number(a.size) || 0) - (Number(b.size) || 0));
     const path = mp4[0].name.split('/').map(encodeURIComponent).join('/');
     return `https://archive.org/download/${encodeURIComponent(v.nativeId)}/${path}`;
@@ -324,9 +330,19 @@ export function parseResolve(v, json) {
     const res = (f) => Number(f.resolution?.id ?? f.resolution) || 0;
     const usable = files.filter((f) => safeUrl(f.fileUrl) && res(f) > 0);
     if (!usable.length) return '';
-    const atMost = usable.filter((f) => res(f) <= 720).sort((a, b) => res(b) - res(a));
+    const max = low ? 480 : 720;
+    const atMost = usable.filter((f) => res(f) <= max).sort((a, b) => res(b) - res(a));
     const pick = atMost[0] || usable.sort((a, b) => res(a) - res(b))[0];
     return safeUrl(pick.fileUrl);
   }
   return '';
+}
+
+// אפשר לשמור בטלפון רק סרטון עם קובץ ישיר (לא יוטיוב / Invidious)
+export function canDownload(v) {
+  if (!v) return false;
+  if (v.sourceType === 'commons') return v.play?.kind === 'video' && !!safeUrl(v.play.url);
+  if (v.sourceType === 'archive') return !!v.nativeId;
+  if (v.sourceType === 'peertube') return !!(v.host && v.nativeId);
+  return false;
 }

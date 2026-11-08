@@ -49,11 +49,12 @@ export async function searchAll(query, settings, { cursors = null, fetchImpl = f
 }
 
 // ניסיון לקבל קובץ וידאו ישיר; כשל ← '' (נשארים עם הנגן המוטמע)
-export async function resolveDirect(v, { fetchImpl = fetch } = {}) {
+export async function resolveDirect(v, { fetchImpl = fetch, quality = 'normal' } = {}) {
+  if (v.sourceType === 'commons') return v.play?.kind === 'video' ? v.play.url : '';
   const url = buildResolveUrl(v);
   if (!url) return '';
   try {
-    return parseResolve(v, await getJson(url, fetchImpl, 8000));
+    return parseResolve(v, await getJson(url, fetchImpl, 8000), quality);
   } catch {
     return '';
   }

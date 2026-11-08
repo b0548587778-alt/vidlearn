@@ -1,7 +1,8 @@
 // ממשק האפליקציה. כל טקסט שמגיע מהרשת נכנס דרך textContent (h()) — אין innerHTML עם נתונים חיצוניים.
 import { createStore, courseProgress, continueWatching } from './store.js';
 import { searchAll, resolveDirect } from './search.js';
-import { SOURCE_TYPES, sourceReady } from './sources.js';
+import { SOURCE_TYPES, sourceReady, canDownload } from './sources.js';
+import { createDownloads, formatBytes } from './downloads.js';
 import { parseWordList } from './filter.js';
 import { t as makeT, SUBJECTS } from './i18n.js';
 import { formatDuration, truncate, safeUrl } from './util.js';
@@ -46,6 +47,84 @@ function toast(msg) {
 }
 
 
+// ---------- הורדות: מתאמים ל-Capacitor (באפליקציה המותקנת בלבד) ----------
+const cap = window.Capacitor;
+const FS = cap?.isNativePlatform?.() ? cap?.Plugins?.Filesystem : null;
+const NET = cap?.isNativePlatform?.() ? cap?.Plugins?.Network : null;
+const fsAdapter = FS ? {
+  async download(url, path, onProgress) {
+    const handle = await FS.addListener('progress', (p) => {
+      if (p && p.url === url && p.contentLength > 0) onProgress(p.bytes / p.contentLength);
+    });
+    try {
+      await FS.downloadFile({ url, path, directory: 'DATA', progress: true, recursive: true });
+      const { uri } = await FS.getUri({ path, directory: 'DATA' });
+      return { uri };
+    } finally {
+      handle?.remove?.();
+    }
+  },
+  async stat(path) { return Number((await FS.stat({ path, directory: 'DATA' })).size) || 0; },
+  async remove(path) { await FS.deleteFile({ path, directory: 'DATA' }); },
+  toSrc: (uri) => cap.convertFileSrc(uri),
+} : null;
+const netAdapter = NET ? {
+  async status() { const s = await NET.getStatus(); return { connected: s.connected, type: s.connectionType }; },
+  onChange(fn) { NET.addListener('networkStatusChange', fn); },
+} : null;
+
+// מסך שמציג מצב הורדה נרשם כאן ומתעדכן (פעם אחת לפריים)
+const dlWatchers = new Set();
+let dlFrame = 0;
+const downloads = createDownloads({
+  store,
+  fs: fsAdapter,
+  network: netAdapter,
+  resolveUrl: (v, quality) => resolveDirect(v, { quality }),
+  onUpdate: () => {
+    if (dlFrame) return;
+    dlFrame = requestAnimationFrame(() => { dlFrame = 0; dlWatchers.forEach((fn) => fn()); });
+  },
+});
+
+function dlLabel(id) {
+  const d = store.getDownload(id);
+  if (!d) return { text: tr('saveOffline'), state: 'none' };
+  if (d.status === 'done') return { text: tr('savedOffline'), state: 'done' };
+  if (d.status === 'downloading') return { text: tr('dlDownloading', Math.round((downloads.progressOf(id) || 0) * 100)), state: 'busy' };
+  if (d.status === 'waiting') return { text: tr('dlWaiting'), state: 'busy' };
+  if (d.status === 'queued') return { text: tr('dlQueued'), state: 'busy' };
+  return { text: d.error === 'limit' ? tr('dlLimit') : tr('dlFailed'), state: 'error' };
+}
+
+// כפתור שמירה שמתעדכן לבד; onDone — למשל להחליף את הנגן לקובץ המקומי
+function downloadButton(v) {
+  if (!canDownload(v)) return h('p', { class: 'muted small' }, tr('dlNotSupported'));
+  if (!downloads.available) return h('p', { class: 'muted small' }, tr('dlOnlyInApp'));
+  const btn = h('button', { class: 'btn btn-sm', type: 'button' });
+  const draw = () => {
+    const l = dlLabel(v.id);
+    btn.textContent = l.text;
+    btn.setAttribute('aria-pressed', String(l.state === 'done'));
+  };
+  btn.addEventListener('click', () => {
+    const l = dlLabel(v.id);
+    if (l.state === 'none') downloads.enqueue(v);
+    else if (l.state === 'error') downloads.retry(v.id);
+    else confirmDialog(tr('dlConfirmRemove'), async () => { await downloads.remove(v.id); toast(tr('removed')); });
+    draw();
+  });
+  draw();
+  dlWatchers.add(draw);
+  return btn;
+}
+
+// סימון נלמד / לא נלמד, כולל מחיקת הסרטון השמור אם הוגדר
+function setLearned(id, done) {
+  store.setDone(id, done);
+  if (done) downloads.onLearned(id);
+}
+
 function remember(v) { known.set(v.id, v); return v; }
 function findVideo(id) {
   if (known.has(id)) return known.get(id);
@@ -70,6 +149,7 @@ function videoCard(v, { courseId } = {}) {
       thumb ? h('img', { src: thumb, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }) : null,
       v.duration ? h('span', { class: 'dur' }, formatDuration(v.duration)) : null,
       p?.done ? h('span', { class: 'check' }, '✓ ' + tr('done')) : null,
+      store.getDownload(v.id)?.status === 'done' ? h('span', { class: 'saved', title: tr('savedOffline'), 'aria-label': tr('savedOffline') }, '⬇') : null,
       pct && !p?.done ? h('span', { class: 'bar' }, h('i', { style: `width:${pct}%` })) : null,
     ),
     h('div', { class: 'meta' },
@@ -195,10 +275,12 @@ function renderLibrary(params) {
   const tab = params.get('tab') || 'courses';
   const s = store.state;
   const tabs = h('div', { class: 'tabs', role: 'tablist' },
-    ['courses', 'favorites', 'history'].map((k) => h('a', { class: 'btn btn-sm', role: 'tab', href: `#/library?tab=${k}`, 'aria-pressed': String(tab === k) },
+    ['courses', 'downloads', 'favorites', 'history'].map((k) => h('a', { class: 'btn btn-sm', role: 'tab', href: `#/library?tab=${k}`, 'aria-pressed': String(tab === k) },
       tr(k === 'courses' ? 'myCourses' : k))));
   let body;
-  if (tab === 'favorites') {
+  if (tab === 'downloads') {
+    body = renderDownloads();
+  } else if (tab === 'favorites') {
     body = s.favorites.length ? h('div', { class: 'cards' }, s.favorites.map((v) => videoCard(v))) : h('p', { class: 'muted center' }, '—');
   } else if (tab === 'history') {
     body = s.history.length
@@ -214,6 +296,36 @@ function renderLibrary(params) {
   return [h('h1', {}, tr('library')), tabs, body];
 }
 
+// מסך "שמורים בטלפון": נפח, התקדמות, מחיקה וניסיון חוזר — מתעדכן בזמן ההורדה
+function renderDownloads() {
+  if (!downloads.available) return h('p', { class: 'muted' }, tr('dlOnlyInApp'));
+  const box = h('div', {});
+  const draw = () => {
+    const list = downloads.list();
+    const limit = store.state.settings.dlLimitMB * 1024 * 1024;
+    const used = downloads.usedBytes();
+    fill(box,
+      h('p', { class: 'muted small' }, tr('dlUsed', formatBytes(used), formatBytes(limit))),
+      h('div', { class: 'progress' }, h('i', { style: `width:${Math.min(100, Math.round((used / limit) * 100))}%` })),
+      list.length ? h('div', { class: 'panel' }, list.map((d) => {
+        const v = remember(d.video);
+        const l = dlLabel(v.id);
+        return h('div', { class: 'lesson' },
+          h('span', { class: `num${l.state === 'done' ? ' ok' : l.state === 'error' ? '' : ' cur'}` }, l.state === 'done' ? '✓' : l.state === 'error' ? '!' : '⬇'),
+          h('div', { class: 'info', onclick: () => go(watchHash(v)) },
+            h('b', {}, v.title),
+            h('span', { class: 'muted small' }, l.state === 'done' ? [formatBytes(d.size), formatDuration(v.duration), v.sourceName].filter(Boolean).join(' · ') : l.text)),
+          h('div', { class: 'tools' },
+            l.state === 'error' ? h('button', { type: 'button', 'aria-label': tr('dlFailed'), title: tr('dlFailed'), onclick: () => downloads.retry(v.id) }, '↻') : null,
+            h('button', { type: 'button', 'aria-label': tr('dlRemove'), title: tr('dlRemove'), onclick: () => confirmDialog(tr('dlConfirmRemove'), () => downloads.remove(v.id)) }, '🗑')));
+      })) : h('p', { class: 'muted' }, tr('noDownloads')),
+    );
+  };
+  draw();
+  dlWatchers.add(draw);
+  return box;
+}
+
 function renderCourse(id) {
   const c = store.state.courses.find((x) => x.id === id);
   if (!c) return h('p', { class: 'center muted' }, '—');
@@ -226,6 +338,8 @@ function renderCourse(id) {
     h('div', { class: 'row' },
       next ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => go(watchHash(next, c.id)) }, pr.done ? tr('continueCourse') : tr('startCourse')) : null,
       !next && pr.total ? h('span', { class: 'badge' }, tr('courseDone')) : null,
+      downloads.available && c.lessons.some(canDownload)
+        ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { toast(tr('courseQueued', downloads.saveCourse(c))); route(); } }, tr('saveCourse')) : null,
       h('button', { class: 'btn btn-sm', type: 'button', onclick: () => renameDialog(c) }, tr('rename')),
       h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: () => confirmDialog(tr('confirmDeleteCourse'), () => { store.deleteCourse(c.id); go('#/library'); }) }, tr('deleteCourse')),
     ),
@@ -235,7 +349,7 @@ function renderCourse(id) {
       return h('div', { class: 'lesson' },
         h('span', { class: `num${done ? ' ok' : i === pr.nextIndex ? ' cur' : ''}` }, done ? '✓' : String(i + 1)),
         h('div', { class: 'info', onclick: () => go(watchHash(l, c.id)) },
-          h('b', {}, l.title), h('span', { class: 'muted small' }, [formatDuration(l.duration), l.sourceName].filter(Boolean).join(' · '))),
+          h('b', {}, l.title), h('span', { class: 'muted small' }, [store.getDownload(l.id)?.status === 'done' ? '⬇' : '', formatDuration(l.duration), l.sourceName].filter(Boolean).join(' · '))),
         h('div', { class: 'tools' },
           h('button', { type: 'button', 'aria-label': tr('moveUp'), title: tr('moveUp'), onclick: () => { store.moveLesson(c.id, i, -1); route(); } }, '▲'),
           h('button', { type: 'button', 'aria-label': tr('moveDown'), title: tr('moveDown'), onclick: () => { store.moveLesson(c.id, i, 1); route(); } }, '▼'),
@@ -254,11 +368,14 @@ function renderWatch(id, params) {
   const player = h('div', { class: 'player' }, h('span', {}, tr('loadingPlayer')));
   const speedRow = h('div', { class: 'row', style: 'margin-top:8px' });
   const embedNote = h('div', { class: 'notice small', hidden: true }, tr('embedNotice'));
+  const offlineNote = h('div', { class: 'notice small', hidden: true }, tr('playingOffline'));
   let videoEl = null;
   let disposed = false;
   let lastSaved = 0;
 
-  function mountVideo(url) {
+  function mountVideo(url, { local = false } = {}) {
+    offlineNote.hidden = !local;
+    embedNote.hidden = true;
     videoEl = h('video', { src: url, controls: true, playsinline: true, preload: 'metadata' });
     const p = store.getProgress(v.id);
     videoEl.addEventListener('loadedmetadata', () => {
@@ -269,8 +386,9 @@ function renderWatch(id, params) {
       if (now - lastSaved > 5000) { lastSaved = now; store.setPosition(v.id, videoEl.currentTime, videoEl.duration); }
     });
     videoEl.addEventListener('pause', () => store.setPosition(v.id, videoEl.currentTime, videoEl.duration));
-    videoEl.addEventListener('ended', () => { store.setDone(v.id, true); drawActions(); offerNext(); });
-    videoEl.addEventListener('error', () => { if (v.play.kind === 'iframe') mountIframe(); }, { once: true });
+    videoEl.addEventListener('ended', () => { setLearned(v.id, true); drawActions(); offerNext(); });
+    // קובץ מקומי שנפגע / נמחק ← מהרשת; קובץ ישיר שנכשל ← הנגן המוטמע
+    videoEl.addEventListener('error', () => { if (local) mountOnline(); else if (v.play.kind === 'iframe') mountIframe(); }, { once: true });
     fill(player, videoEl);
     fill(speedRow, h('span', { class: 'muted small' }, tr('speed') + ':'),
       [0.75, 1, 1.25, 1.5, 1.75, 2].map((r) => h('button', {
@@ -293,12 +411,20 @@ function renderWatch(id, params) {
     drawNotes();
   }
 
-  (async () => {
+  async function mountOnline() {
+    offlineNote.hidden = true;
     if (v.play.kind === 'video' && safeUrl(v.play.url)) return mountVideo(v.play.url);
     const direct = v.sourceType === 'archive' || v.sourceType === 'peertube' ? await resolveDirect(v) : '';
     if (disposed) return;
     if (direct) mountVideo(direct); else mountIframe();
-  })();
+  }
+
+  // בקורס — השיעור הבא יורד מראש
+  if (course) {
+    const pre = downloads.prefetchNext(course, v.id);
+    if (pre) toast(tr('nextPrefetched', truncate(pre.title, 40)));
+  }
+  const dlBtn = downloadButton(v);
 
   const actions = h('div', { class: 'row', style: 'margin-top:10px' });
   function drawActions() {
@@ -306,7 +432,8 @@ function renderWatch(id, params) {
     const done = !!store.getProgress(v.id)?.done;
     const page = safeUrl(v.pageUrl);
     fill(actions, 
-      h('button', { class: 'btn btn-sm', type: 'button', 'aria-pressed': String(done), onclick: () => { store.setDone(v.id, !done); drawActions(); if (!done) offerNext(); } }, done ? '✓ ' + tr('done') : tr('markDone')),
+      h('button', { class: 'btn btn-sm', type: 'button', 'aria-pressed': String(done), onclick: () => { setLearned(v.id, !done); drawActions(); if (!done) offerNext(); } }, done ? '✓ ' + tr('done') : tr('markDone')),
+      dlBtn,
       h('button', { class: 'btn btn-sm', type: 'button', onclick: () => addToCourseDialog(v) }, '＋ ' + tr('addToCourse')),
       h('button', { class: 'btn btn-sm', type: 'button', 'aria-pressed': String(fav), onclick: () => { store.toggleFavorite(v); drawActions(); } }, fav ? '★ ' + tr('unfavorite') : '☆ ' + tr('favorite')),
       page ? h('a', { class: 'btn btn-sm', href: page, target: '_blank', rel: 'noopener noreferrer' }, '↗ ' + tr('openSource')) : null,
@@ -347,8 +474,13 @@ function renderWatch(id, params) {
       const cur = l.id === v.id;
       return h('div', { class: 'lesson' },
         h('span', { class: `num${done ? ' ok' : cur ? ' cur' : ''}` }, done ? '✓' : String(i + 1)),
-        h('div', { class: 'info', onclick: () => { if (!cur) go(watchHash(l, course.id)); } }, h('b', {}, l.title)));
+        h('div', { class: 'info', onclick: () => { if (!cur) go(watchHash(l, course.id)); } }, h('b', {}, l.title)),
+        store.getDownload(l.id)?.status === 'done' ? h('span', { class: 'muted', title: tr('savedOffline'), 'aria-label': tr('savedOffline') }, '⬇') : null);
     })) : null;
+
+  // הנגן נטען אחרי שכל חלקי המסך (גם ההערות) קיימים — סרטון שמור נטען מיד, בלי רשת
+  const localSrc = downloads.localSrc(v.id);
+  if (localSrc) mountVideo(localSrc, { local: true }); else mountOnline();
 
   cleanupView = () => {
     disposed = true;
@@ -357,7 +489,7 @@ function renderWatch(id, params) {
   };
 
   return [
-    player, speedRow, embedNote,
+    player, speedRow, embedNote, offlineNote,
     h('h1', { class: 'watch-title' }, v.title),
     h('p', { class: 'muted small' }, [v.author && `${tr('by')} ${v.author}`, v.sourceName, formatDuration(v.duration)].filter(Boolean).join(' · ')),
     actions, nextBox,
@@ -416,6 +548,22 @@ function renderSettings() {
     lastSearch = null;
   });
 
+  // הגדרות הורדה
+  const dlWifi = h('input', { type: 'checkbox', class: 'switch', id: 'dlWifi', checked: s.dlWifiOnly });
+  dlWifi.addEventListener('change', () => { store.setSetting('dlWifiOnly', dlWifi.checked); if (!dlWifi.checked) downloads.pump(); });
+  const dlQ = h('select', { class: 'input', id: 'dlQuality' }, h('option', { value: 'normal' }, tr('dlQualityNormal')), h('option', { value: 'low' }, tr('dlQualityLow')));
+  dlQ.value = s.dlQuality;
+  dlQ.addEventListener('change', () => store.setSetting('dlQuality', dlQ.value));
+  const dlLimit = h('input', { class: 'input', id: 'dlLimit', type: 'number', min: 100, step: 100, value: s.dlLimitMB, dir: 'ltr' });
+  dlLimit.addEventListener('change', () => {
+    const n = Math.round(Number(dlLimit.value));
+    if (n >= 100) store.setSetting('dlLimitMB', Math.min(n, 200000)); else dlLimit.value = store.state.settings.dlLimitMB;
+  });
+  const dlNext = h('input', { type: 'checkbox', class: 'switch', id: 'dlNext', checked: s.dlAutoNext });
+  dlNext.addEventListener('change', () => store.setSetting('dlAutoNext', dlNext.checked));
+  const dlDel = h('input', { type: 'checkbox', class: 'switch', id: 'dlDel', checked: s.dlDeleteLearned });
+  dlDel.addEventListener('change', () => store.setSetting('dlDeleteLearned', dlDel.checked));
+
   const backupText = h('textarea', { id: 'backupText', dir: 'ltr', 'aria-label': tr('backup'), style: 'min-height:120px' });
   const doExport = async () => {
     const json = store.exportJson();
@@ -439,6 +587,13 @@ function renderSettings() {
       h('label', { class: 'field', for: 'extraBlock' }, tr('extraBlock'), extra),
       h('label', { class: 'field', for: 'contentLangs' }, tr('contentLangs'), langsIn),
       h('div', { class: 'notice warn small' }, tr('filterNote'))),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '⬇ ' + tr('dlSettings')),
+      downloads.available ? null : h('div', { class: 'notice small' }, tr('dlOnlyInApp')),
+      h('label', { class: 'check', for: 'dlWifi' }, dlWifi, tr('dlWifiOnly')),
+      h('label', { class: 'field', for: 'dlQuality' }, tr('dlQuality'), dlQ),
+      h('label', { class: 'field', for: 'dlLimit' }, tr('dlLimitMB'), dlLimit),
+      h('label', { class: 'check', for: 'dlNext' }, dlNext, tr('dlAutoNext')),
+      h('label', { class: 'check', for: 'dlDel' }, dlDel, tr('dlDeleteLearned'))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('backup')), backupText,
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('button', { class: 'btn', type: 'button', onclick: doExport }, tr('exportData')),
@@ -508,6 +663,7 @@ function applyLang() {
 
 function route() {
   if (cleanupView) { try { cleanupView(); } catch { /* */ } cleanupView = null; }
+  dlWatchers.clear();
   const raw = location.hash.replace(/^#\/?/, '') || 'home';
   const [path, query = ''] = raw.split('?');
   const params = new URLSearchParams(query);
@@ -547,3 +703,4 @@ if (capApp) {
 
 applyLang();
 route();
+downloads.pump(); // הורדות שנקטעו בפעם הקודמת ממשיכות

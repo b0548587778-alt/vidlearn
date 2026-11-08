@@ -1,0 +1,161 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createDownloads, fileNameFor, MB } from '../www/js/downloads.js';
+import { createStore, normalizeState } from '../www/js/store.js';
+import { canDownload } from '../www/js/sources.js';
+
+function mem() { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)) }; }
+const arch = (id) => ({ id: `archive:${id}`, nativeId: id, title: id, sourceType: 'archive', sourceName: 'A', play: { kind: 'iframe', url: 'https://archive.org/embed/' + id } });
+
+function fakeFs({ size = 10 * MB, fail = null } = {}) {
+  const files = new Map();
+  return {
+    files,
+    async download(url, path, onProgress) {
+      if (fail && url.includes(fail)) throw new Error('net');
+      onProgress(0.5);
+      files.set(path, size);
+      return { uri: 'file:///data/' + path };
+    },
+    async stat(path) { return files.get(path) ?? 0; },
+    async remove(path) { files.delete(path); },
+    toSrc: (uri) => 'https://localhost/_capacitor_file_' + uri.slice(7),
+  };
+}
+function fakeNet(type = 'wifi') {
+  let fn = null;
+  const n = { type, status: async () => ({ connected: n.type !== 'none', type: n.type }), onChange: (f) => { fn = f; }, fire: () => fn && fn() };
+  return n;
+}
+const resolveUrl = async (v, q) => `https://archive.org/download/${v.nativeId}/${q}.mp4`;
+const idle = () => new Promise((r) => setTimeout(r, 0));
+async function settle(dl) { for (let i = 0; i < 20; i++) await idle(); }
+
+test('מה אפשר להוריד: לא יוטיוב', () => {
+  assert.equal(canDownload(arch('a')), true);
+  assert.equal(canDownload({ id: 'youtube:x', sourceType: 'youtube', play: { kind: 'iframe', url: 'https://www.youtube-nocookie.com/embed/x' } }), false);
+  assert.equal(canDownload({ sourceType: 'commons', play: { kind: 'video', url: 'https://upload.wikimedia.org/a.webm' } }), true);
+  assert.equal(fileNameFor({ id: 'commons:5' }, 'https://upload.wikimedia.org/x/a.webm?utm=1'), 'videos/commons_5.webm');
+});
+
+test('הורדה: נשמר, גודל, נגן מקומי, ומחיקה', async () => {
+  const store = createStore(mem());
+  const fs = fakeFs();
+  const dl = createDownloads({ store, fs, network: fakeNet(), resolveUrl });
+  assert.equal(dl.enqueue(arch('a')), 'queued');
+  assert.equal(dl.enqueue(arch('a')), 'exists');
+  await settle(dl);
+  const d = store.getDownload('archive:a');
+  assert.equal(d.status, 'done');
+  assert.equal(d.size, 10 * MB);
+  assert.equal(d.path, 'videos/archive_a.mp4');
+  assert.equal(dl.localSrc('archive:a'), 'https://localhost/_capacitor_file_/data/videos/archive_a.mp4');
+  assert.equal(dl.usedBytes(), 10 * MB);
+  await dl.remove('archive:a');
+  assert.equal(fs.files.size, 0);
+  assert.equal(store.getDownload('archive:a'), null);
+});
+
+test('איכות חסכונית עוברת לכתובת', async () => {
+  const store = createStore(mem());
+  store.setSetting('dlQuality', 'low');
+  const dl = createDownloads({ store, fs: fakeFs(), network: fakeNet(), resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').quality, 'low');
+});
+
+test('רק Wi-Fi: בסלולר ממתין, וממשיך כשה-Wi-Fi חוזר', async () => {
+  const store = createStore(mem());
+  const net = fakeNet('cellular');
+  const dl = createDownloads({ store, fs: fakeFs(), network: net, resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'waiting');
+  net.type = 'wifi';
+  net.fire();
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'done');
+});
+
+test('גם בסלולר כשהמשתמש התיר', async () => {
+  const store = createStore(mem());
+  store.setSetting('dlWifiOnly', false);
+  const dl = createDownloads({ store, fs: fakeFs(), network: fakeNet('cellular'), resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'done');
+});
+
+test('תקרת נפח: קובץ שחורג נמחק ומסומן', async () => {
+  const store = createStore(mem());
+  store.setSetting('dlLimitMB', 100);
+  const fs = fakeFs({ size: 60 * MB });
+  const dl = createDownloads({ store, fs, network: fakeNet(), resolveUrl });
+  dl.enqueue(arch('a'));
+  dl.enqueue(arch('b'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'done');
+  assert.equal(store.getDownload('archive:b').status, 'error');
+  assert.equal(store.getDownload('archive:b').error, 'limit');
+  assert.equal(fs.files.size, 1);
+});
+
+test('כשל ברשת ← שגיאה, ניסיון חוזר מצליח', async () => {
+  const store = createStore(mem());
+  const fs = fakeFs({ fail: '/a/' });
+  const dl = createDownloads({ store, fs, network: fakeNet(), resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'error');
+  const ok = fakeFs();
+  fs.download = ok.download; fs.stat = ok.stat;
+  assert.equal(dl.retry('archive:a'), true);
+  await settle(dl);
+  assert.equal(store.getDownload('archive:a').status, 'done');
+});
+
+test('קורס: השיעור הבא שלא נלמד נשמר מראש; שמירת קורס שלם', async () => {
+  const store = createStore(mem());
+  const c = store.createCourse('קורס');
+  ['a', 'b', 'c'].forEach((x) => store.addLesson(c.id, arch(x)));
+  store.setDone('archive:b', true);
+  const dl = createDownloads({ store, fs: fakeFs(), network: fakeNet(), resolveUrl });
+  const next = dl.prefetchNext(store.state.courses[0], 'archive:a');
+  assert.equal(next.id, 'archive:c', 'מדלג על שיעור שכבר נלמד');
+  assert.equal(store.getDownload('archive:c').auto, true);
+  assert.equal(dl.saveCourse(store.state.courses[0]), 2);
+  await settle(dl);
+  assert.equal(dl.list().filter((d) => d.status === 'done').length, 3);
+  store.setSetting('dlAutoNext', false);
+  assert.equal(dl.prefetchNext(store.state.courses[0], 'archive:a'), null);
+});
+
+test('נלמד ← נמחק רק אם הוגדר', async () => {
+  const store = createStore(mem());
+  const dl = createDownloads({ store, fs: fakeFs(), network: fakeNet(), resolveUrl });
+  dl.enqueue(arch('a'));
+  await settle(dl);
+  assert.equal(await dl.onLearned('archive:a'), false);
+  store.setSetting('dlDeleteLearned', true);
+  assert.equal(await dl.onLearned('archive:a'), true);
+  assert.equal(store.getDownload('archive:a'), null);
+});
+
+test('בלי מערכת קבצים (דפדפן) — לא זמין', () => {
+  const dl = createDownloads({ store: createStore(mem()), fs: null, network: null, resolveUrl });
+  assert.equal(dl.available, false);
+  assert.equal(dl.enqueue(arch('a')), 'unavailable');
+});
+
+test('הורדה שנקטעה חוזרת לתור; גיבוי לא כולל קבצים', () => {
+  const v = arch('a');
+  const n = normalizeState({ settings: {}, downloads: { 'archive:a': { video: v, status: 'downloading' }, bad: { status: 'done' } } });
+  assert.deepEqual(Object.keys(n.downloads), ['archive:a']);
+  assert.equal(n.downloads['archive:a'].status, 'queued');
+  const s = createStore(mem());
+  s.setDownload('archive:a', { video: v, status: 'done', path: 'videos/x.mp4' });
+  assert.deepEqual(JSON.parse(s.exportJson()).downloads, {});
+  s.importJson(JSON.stringify({ settings: {} }));
+  assert.equal(s.getDownload('archive:a').status, 'done', 'ייבוא לא מוחק את מה שבטלפון');
+});

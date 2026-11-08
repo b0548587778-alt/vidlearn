@@ -16,14 +16,25 @@ export function defaultState() {
       extraBlock: [],
       contentLangs: [],
       sources: DEFAULT_SOURCES.map((s) => ({ ...s })),
+      ...DOWNLOAD_DEFAULTS,
     },
     courses: [],
     favorites: [],
     history: [],
     progress: {},
     notes: {},
+    downloads: {}, // id ← { video, status, path, uri, size, quality, at, error }
   };
 }
+
+export const DOWNLOAD_DEFAULTS = {
+  dlWifiOnly: true,       // הורדה רק ב-Wi-Fi
+  dlQuality: 'normal',    // normal (עד 720p) / low (חסכוני)
+  dlLimitMB: 2000,        // תקרת נפח לכל הסרטונים השמורים
+  dlAutoNext: true,       // בקורס — להוריד מראש את השיעור הבא
+  dlDeleteLearned: false, // למחוק סרטון שמור כשמסמנים אותו כנלמד
+};
+export const DL_STATUSES = ['queued', 'waiting', 'downloading', 'done', 'error'];
 
 // תמונת מצב של סרטון לשמירה — רק השדות שהממשק צריך
 export function snapshot(v) {
@@ -51,13 +62,30 @@ export function normalizeState(raw) {
       extraBlock: Array.isArray(s.extraBlock) ? s.extraBlock.map(String).slice(0, 200) : [],
       contentLangs: Array.isArray(s.contentLangs) ? s.contentLangs.map(String).filter((x) => /^[a-z]{2,3}$/.test(x)).slice(0, 5) : [],
       sources,
+      dlWifiOnly: s.dlWifiOnly === undefined ? DOWNLOAD_DEFAULTS.dlWifiOnly : !!s.dlWifiOnly,
+      dlQuality: s.dlQuality === 'low' ? 'low' : 'normal',
+      dlLimitMB: Number.isFinite(Number(s.dlLimitMB)) && Number(s.dlLimitMB) >= 100 ? Math.min(Math.round(Number(s.dlLimitMB)), 200000) : DOWNLOAD_DEFAULTS.dlLimitMB,
+      dlAutoNext: s.dlAutoNext === undefined ? DOWNLOAD_DEFAULTS.dlAutoNext : !!s.dlAutoNext,
+      dlDeleteLearned: !!s.dlDeleteLearned,
     },
     courses: Array.isArray(raw.courses) ? raw.courses.filter((c) => c && c.id && Array.isArray(c.lessons)) : [],
     favorites: Array.isArray(raw.favorites) ? raw.favorites.filter((v) => v && v.id) : [],
     history: Array.isArray(raw.history) ? raw.history.filter((h) => h && h.video && h.video.id).slice(0, MAX_HISTORY) : [],
     progress: raw.progress && typeof raw.progress === 'object' ? raw.progress : {},
     notes: raw.notes && typeof raw.notes === 'object' ? raw.notes : {},
+    downloads: normalizeDownloads(raw.downloads),
   };
+}
+
+function normalizeDownloads(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [id, d] of Object.entries(raw)) {
+    if (!d || typeof d !== 'object' || !d.video || d.video.id !== id || !DL_STATUSES.includes(d.status)) continue;
+    // הורדה שנקטעה (האפליקציה נסגרה באמצע) — חוזרת לתור
+    out[id] = { ...d, status: d.status === 'downloading' ? 'queued' : d.status };
+  }
+  return out;
 }
 
 export function createStore(storage, { onSaveError } = {}) {
@@ -206,14 +234,24 @@ export function createStore(storage, { onSaveError } = {}) {
       [c.lessons[index], c.lessons[j]] = [c.lessons[j], c.lessons[index]];
       return save();
     },
+    // --- הורדות ---
+    getDownload(id) { return state.downloads[id] || null; },
+    setDownload(id, patch) {
+      if (patch === null) delete state.downloads[id];
+      else state.downloads[id] = { ...(state.downloads[id] || {}), ...patch };
+      return save();
+    },
+
     coursesWith(videoId) { return state.courses.filter((c) => c.lessons.some((l) => l.id === videoId)); },
 
     // גיבוי ידני: ייצוא / ייבוא של כל המצב כ-JSON
-    exportJson() { return JSON.stringify(state, null, 2); },
+    exportJson() { return JSON.stringify({ ...state, downloads: {} }, null, 2); },
     importJson(text) {
       const parsed = JSON.parse(text);
       if (!parsed || typeof parsed !== 'object' || !parsed.settings) throw new Error('bad-backup');
+      const keep = state.downloads; // הקבצים בטלפון הזה, לא בגיבוי
       state = normalizeState(parsed);
+      state.downloads = keep;
       return save();
     },
   };

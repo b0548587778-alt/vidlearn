@@ -45,8 +45,10 @@ test('Archive: פירוק ומשך', () => {
 test('Archive: קובץ mp4 ישיר מהמטא-דאטה', () => {
   const v = { sourceType: 'archive', nativeId: 'abc' };
   assert.equal(buildResolveUrl(v), 'https://archive.org/metadata/abc');
-  const url = parseResolve(v, { files: [{ name: 'a.ogv' }, { name: 'big.mp4', source: 'original', size: '900' }, { name: 'dir/a 512kb.mp4', format: '512Kb MPEG4', size: '100' }] });
-  assert.equal(url, 'https://archive.org/download/abc/dir/a%20512kb.mp4');
+  const files = [{ name: 'a.ogv' }, { name: 'big.mp4', source: 'original', size: '900' }, { name: 'dir/a 512kb.mp4', format: '512Kb MPEG4', size: '100', source: 'derivative' }, { name: 'a.h264.mp4', format: 'h.264', size: '400', source: 'derivative' }];
+  assert.equal(parseResolve(v, { files }), 'https://archive.org/download/abc/a.h264.mp4');
+  assert.equal(parseResolve(v, { files }, 'low'), 'https://archive.org/download/abc/dir/a%20512kb.mp4');
+  assert.equal(parseResolve(v, { files: [files[1]] }), 'https://archive.org/download/abc/big.mp4');
 });
 
 test('Commons: רק VIDEO, נגן ישיר', () => {
@@ -85,6 +87,7 @@ test('PeerTube: בחירת קובץ עד 720p, גם מתוך HLS', () => {
   assert.equal(buildResolveUrl(v), 'https://tube.x/api/v1/videos/u');
   const files = [{ resolution: { id: 1080 }, fileUrl: 'https://tube.x/1080.mp4' }, { resolution: { id: 720 }, fileUrl: 'https://tube.x/720.mp4' }, { resolution: { id: 0 }, fileUrl: 'https://tube.x/audio.mp4' }];
   assert.equal(parseResolve(v, { files }), 'https://tube.x/720.mp4');
+  assert.equal(parseResolve(v, { files: [...files, { resolution: { id: 480 }, fileUrl: 'https://tube.x/480.mp4' }] }, 'low'), 'https://tube.x/480.mp4');
   assert.equal(parseResolve(v, { files: [], streamingPlaylists: [{ files: [{ resolution: { id: 1080 }, fileUrl: 'https://tube.x/h.mp4' }] }] }), 'https://tube.x/h.mp4');
   assert.equal(parseResolve(v, { files: [{ resolution: { id: 480 }, fileUrl: 'http://tube.x/insecure.mp4' }] }), '');
 });
