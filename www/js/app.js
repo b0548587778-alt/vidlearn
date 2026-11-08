@@ -8,6 +8,7 @@ import { createDownloads, formatBytes } from './downloads.js';
 import { parseWordList } from './filter.js';
 import { t as makeT, SUBJECTS } from './i18n.js';
 import { formatDuration, truncate, safeUrl } from './util.js';
+import { VERSION } from './version.js';
 
 const store = createStore(window.localStorage, { onSaveError: () => toast(tr('saveFailed')) });
 let tr = makeT(store.state.settings.lang);
@@ -207,7 +208,7 @@ function renderHome() {
   const cont = continueWatching(s).map(remember);
   const courses = s.courses.slice(0, 6);
   return [
-    h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')),
+    h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')), h('p', { class: 'muted small' }, VERSION),
       typeTabs(homeType, (k) => { homeType = k; route(); }), searchBar('', homeType)),
     cont.length ? [h('h2', {}, tr('continueLearning')), h('div', { class: 'hscroll' }, cont.map((v) => videoCard(v)))] : null,
     courses.length ? [h('h2', {}, tr('myCourses')), h('div', { class: 'hscroll' }, courses.map(courseCard))] : null,
@@ -1184,6 +1185,7 @@ function renderSettings(params = new URLSearchParams()) {
 
   return [
     h('h1', {}, tr('settings')),
+    h('p', { class: 'muted small' }, `${tr('version')}: ${VERSION}`),
     h('div', { class: 'panel' }, h('label', { class: 'field', for: 'langSel' }, tr('language'), langSel)),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('sources')), h('p', { class: 'muted small' }, tr('sourcesHint')), sourcesBox,
       h('h2', {}, tr('addSource')),

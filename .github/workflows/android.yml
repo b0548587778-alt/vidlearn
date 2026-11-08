@@ -31,6 +31,10 @@ jobs:
       - name: Tests
         run: npm test
 
+      # מספר הגרסה בתוך האפליקציה — כדי לדעת איזו גרסה מותקנת בטלפון
+      - name: Stamp version
+        run: echo "export const VERSION = 'build-${{ github.run_number }}';" > www/js/version.js
+
       - name: Create Android project
         run: |
           npx cap add android
@@ -54,6 +58,10 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
+          # הורדת Gradle נקטעת לפעמים אחרי 10 שניות (ברירת המחדל) — זמן ארוך יותר וניסיון חוזר
+          # להורדה בלבד; הבנייה עצמה רצה פעם אחת
+          sed -i 's/^networkTimeout=.*/networkTimeout=120000/' gradle/wrapper/gradle-wrapper.properties
+          for i in 1 2 3; do ./gradlew --version --no-daemon >/dev/null && break; echo "Gradle download failed (attempt $i), retrying"; sleep 10; done
           ./gradlew assembleDebug --no-daemon
 
       - name: Rename APK
