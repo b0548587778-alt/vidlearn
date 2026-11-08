@@ -250,22 +250,34 @@ function renderSearch(params) {
     fill(more, st.hasMore ? h('button', { class: 'btn', type: 'button', onclick: loadMore }, tr('loadMore')) : '');
   }
 
+  // הבקשה שייכת לתוצאות (st.loading), לא למסך: יציאה וחזרה באמצע לא שולחת אותה שוב,
+  // והתוצאה מצוירת במסך הנוכחי
   async function loadMore() {
-    fill(more, h('div', { class: 'spinner' }));
     const st = lastSearch;
-    const r = await searchAll(q, store.state.settings, { cursors: st.cursors });
-    if (lastSearch !== st) return;
-    const ids = new Set(st.items.map((v) => v.id));
-    st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
-    st.cursors = { ...st.cursors, ...r.cursors };
-    st.hasMore = Object.values(st.cursors).some((c) => c !== null);
-    st.filtered += r.filtered;
-    st.errors = r.errors;
-    draw();
+    if (!st.loading) {
+      st.loading = (async () => {
+        try {
+          const r = await searchAll(q, store.state.settings, { cursors: st.cursors });
+          const ids = new Set(st.items.map((v) => v.id));
+          st.items.push(...r.items.filter((v) => !ids.has(v.id)).map(remember));
+          st.cursors = { ...st.cursors, ...r.cursors };
+          st.filtered += r.filtered;
+          st.errors = r.errors;
+        } catch {
+          st.cursors = {}; // אין המשך — הכפתור נעלם
+        } finally {
+          st.hasMore = Object.values(st.cursors).some((c) => c !== null);
+          st.loading = null;
+        }
+      })();
+    }
+    fill(more, h('div', { class: 'spinner' }));
+    await st.loading;
+    if (lastSearch === st && more.isConnected) draw();
   }
 
   if (lastSearch && lastSearch.q === q) {
-    draw();
+    if (lastSearch.loading) loadMore(); else draw();
   } else {
     fill(results, h('div', { class: 'spinner' }), h('p', { class: 'center muted' }, tr('searching')));
     const token = {};
@@ -469,7 +481,7 @@ function renderWatch(id, params) {
   function offerNext() {
     if (!course) return;
     const i = course.lessons.findIndex((l) => l.id === v.id);
-    const n = course.lessons[i + 1];
+    const n = i >= 0 ? course.lessons[i + 1] : null; // הסרטון כבר לא בקורס — אין "הבא"
     fill(nextBox, n ? h('div', { class: 'panel' }, h('b', {}, '⏭ '), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => go(watchHash(n, course.id)) }, `${i + 2}. ${truncate(n.title, 60)}`)) : '');
   }
 

@@ -38,3 +38,14 @@ test('מיזוג לסירוגין בלי כפילויות', () => {
   const out = mergeResults([a, b]).map((x) => x.title);
   assert.deepEqual(out, ['A1', 'B1', 'Same']);
 });
+
+test('סקירה: מילה אסורה בעברית לא תופסת מילה ארוכה יותר', () => {
+  assert.equal(blockedBy(v('שיעור גאוגרפיה: קליפורניה')), null);
+  assert.ok(blockedBy(v('קליפים מצחיקים')));
+  assert.ok(blockedBy(v('הקליפ החדש')));
+});
+
+test('סקירה: אותה כותרת בלי משך ידוע — לא מתאחדים', () => {
+  const out = mergeResults([[v('Lesson 1', { id: 'youtube:a' }), v('Lesson 1', { id: 'youtube:b' })]]);
+  assert.equal(out.length, 2);
+});

@@ -5,6 +5,7 @@ import { normalizeBase, uid } from './util.js';
 export const STORAGE_KEY = 'vidlearn:v1';
 const MAX_HISTORY = 200;
 const MAX_NOTES = 500;
+export const MAX_PROGRESS = 3000; // רשומות התקדמות; הישנות ביותר נמחקות (חוץ מאלה שבקורסים)
 export const DONE_RATIO = 0.9;
 
 export function defaultState() {
@@ -68,13 +69,45 @@ export function normalizeState(raw) {
       dlAutoNext: s.dlAutoNext === undefined ? DOWNLOAD_DEFAULTS.dlAutoNext : !!s.dlAutoNext,
       dlDeleteLearned: !!s.dlDeleteLearned,
     },
-    courses: Array.isArray(raw.courses) ? raw.courses.filter((c) => c && c.id && Array.isArray(c.lessons)) : [],
-    favorites: Array.isArray(raw.favorites) ? raw.favorites.filter((v) => v && v.id) : [],
-    history: Array.isArray(raw.history) ? raw.history.filter((h) => h && h.video && h.video.id).slice(0, MAX_HISTORY) : [],
-    progress: raw.progress && typeof raw.progress === 'object' ? raw.progress : {},
-    notes: raw.notes && typeof raw.notes === 'object' ? raw.notes : {},
+    courses: Array.isArray(raw.courses)
+      ? raw.courses.filter((c) => c && typeof c.id === 'string' && Array.isArray(c.lessons))
+        .map((c) => ({ ...c, name: String(c.name || '—'), lessons: c.lessons.filter(validVideo) }))
+      : [],
+    favorites: Array.isArray(raw.favorites) ? raw.favorites.filter(validVideo) : [],
+    history: Array.isArray(raw.history) ? raw.history.filter((h) => h && validVideo(h.video)).slice(0, MAX_HISTORY) : [],
+    progress: normalizeProgress(raw.progress),
+    notes: normalizeNotes(raw.notes),
     downloads: normalizeDownloads(raw.downloads),
   };
+}
+
+// סרטון שמור תקין: הממשק ניגש ל-id, ל-title ול-play בלי בדיקה
+function validVideo(v) {
+  return !!v && typeof v === 'object' && typeof v.id === 'string' && v.id !== ''
+    && typeof v.title === 'string' && !!v.play && typeof v.play === 'object' && typeof v.play.url === 'string';
+}
+
+function normalizeProgress(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [id, p] of Object.entries(raw)) {
+    if (!p || typeof p !== 'object') continue;
+    out[id] = { pos: Number(p.pos) || 0, dur: Number(p.dur) || 0, done: !!p.done, at: Number(p.at) || 0 };
+  }
+  return out;
+}
+
+function normalizeNotes(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [id, list] of Object.entries(raw)) {
+    if (!Array.isArray(list)) continue;
+    const clean = list.filter((n) => n && typeof n.text === 'string' && n.text.trim())
+      .map((n) => ({ id: String(n.id || Math.random().toString(36).slice(2)), text: n.text.slice(0, 2000), t: Number.isFinite(n.t) ? n.t : null, at: Number(n.at) || 0 }))
+      .slice(0, MAX_NOTES);
+    if (clean.length) out[id] = clean;
+  }
+  return out;
 }
 
 function normalizeDownloads(raw) {
@@ -96,6 +129,18 @@ export function createStore(storage, { onSaveError } = {}) {
     state = defaultState();
   }
   const listeners = new Set();
+
+  // התקדמות לא גדלה בלי סוף: מעל MAX_PROGRESS נמחקות הישנות ביותר,
+  // חוץ מסרטונים בקורסים (שם "נלמד" קובע את ההתקדמות בקורס)
+  function pruneProgress() {
+    const ids = Object.keys(state.progress);
+    if (ids.length <= MAX_PROGRESS) return;
+    const inCourse = new Set(state.courses.flatMap((c) => c.lessons.map((l) => l.id)));
+    ids.filter((id) => !inCourse.has(id))
+      .sort((a, b) => (state.progress[a].at || 0) - (state.progress[b].at || 0))
+      .slice(0, ids.length - MAX_PROGRESS)
+      .forEach((id) => delete state.progress[id]);
+  }
 
   function save() {
     try {
@@ -166,6 +211,7 @@ export function createStore(storage, { onSaveError } = {}) {
       if (p.dur && p.pos / p.dur >= DONE_RATIO) p.done = true;
       p.at = Date.now();
       state.progress[id] = p;
+      pruneProgress();
       return save();
     },
     setDone(id, done) {
@@ -245,13 +291,20 @@ export function createStore(storage, { onSaveError } = {}) {
     coursesWith(videoId) { return state.courses.filter((c) => c.lessons.some((l) => l.id === videoId)); },
 
     // גיבוי ידני: ייצוא / ייבוא של כל המצב כ-JSON
-    exportJson() { return JSON.stringify({ ...state, downloads: {} }, null, 2); },
+    // בלי קבצי הווידאו (נשארים בטלפון) ובלי מפתחות API (סוד — לא נשלח בשיתוף)
+    exportJson() {
+      const sources = state.settings.sources.map(({ key, ...rest }) => rest);
+      return JSON.stringify({ ...state, settings: { ...state.settings, sources }, downloads: {} }, null, 2);
+    },
     importJson(text) {
       const parsed = JSON.parse(text);
       if (!parsed || typeof parsed !== 'object' || !parsed.settings) throw new Error('bad-backup');
-      const keep = state.downloads; // הקבצים בטלפון הזה, לא בגיבוי
+      const keepDownloads = state.downloads; // הקבצים בטלפון הזה, לא בגיבוי
+      const keys = Object.fromEntries(state.settings.sources.filter((x) => x.key).map((x) => [x.id, x.key]));
       state = normalizeState(parsed);
-      state.downloads = keep;
+      state.downloads = keepDownloads;
+      // מפתח שלא בגיבוי — נשאר המפתח שכבר בטלפון
+      state.settings.sources.forEach((x) => { if (!x.key && keys[x.id]) x.key = keys[x.id]; });
       return save();
     },
   };

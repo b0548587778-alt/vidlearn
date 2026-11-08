@@ -75,3 +75,43 @@ test('כישלון שמירה מדווח', () => {
   assert.equal(s.createCourse('x').name, 'x');
   assert.equal(called, 1);
 });
+
+test('סקירה: גיבוי פגום לא שובר את המסכים', () => {
+  const s = createStore(mem());
+  s.importJson(JSON.stringify({
+    settings: {},
+    favorites: [{ id: 'x' }, { id: 'ok', title: 'T', play: { kind: 'video', url: 'https://a/b.mp4' } }],
+    courses: [{ id: 'c', name: 'C', lessons: [{ id: 'bad' }] }],
+    notes: { x: 'text', y: [{ text: 'טוב', t: 5 }, { nope: 1 }] },
+    progress: { a: 'x', b: { pos: '10', done: 1 } },
+  }));
+  assert.deepEqual(s.state.favorites.map((f) => f.id), ['ok']);
+  assert.equal(s.state.courses[0].lessons.length, 0);
+  assert.deepEqual(s.notesFor('x'), []);
+  assert.deepEqual(s.notesFor('y').map((n) => n.text), ['טוב']);
+  assert.deepEqual(s.getProgress('b'), { pos: 10, dur: 0, done: true, at: 0 });
+  assert.equal(s.getProgress('a'), null);
+});
+
+test('סקירה: מפתח API לא יוצא בגיבוי, ונשמר בייבוא', () => {
+  const s = createStore(mem());
+  s.updateSource('youtube', { key: 'SECRET', enabled: true });
+  const json = s.exportJson();
+  assert.ok(!json.includes('SECRET'));
+  s.importJson(json);
+  assert.equal(s.state.settings.sources.find((x) => x.id === 'youtube').key, 'SECRET');
+});
+
+test('סקירה: רשומות התקדמות מוגבלות, בלי לגעת בשיעורי קורס', async () => {
+  const { MAX_PROGRESS } = await import('../www/js/store.js');
+  const s = createStore(mem());
+  const c = s.createCourse('ק');
+  s.addLesson(c.id, vid('course-lesson'));
+  s.setPosition('course-lesson', 1, 100);
+  for (let i = 0; i < MAX_PROGRESS + 5; i++) s.state.progress['v' + i] = { pos: 1, dur: 10, at: i + 10 };
+  s.setPosition('newest', 1, 100);
+  assert.equal(Object.keys(s.state.progress).length, MAX_PROGRESS);
+  assert.ok(s.getProgress('course-lesson'), 'שיעור בקורס נשמר');
+  assert.ok(s.getProgress('newest'));
+  assert.equal(s.getProgress('v0'), null, 'הישן ביותר נמחק');
+});

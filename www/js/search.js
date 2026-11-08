@@ -1,31 +1,48 @@
 // חיפוש מקביל בכל המקורות הפעילים. מקור שנכשל לא מפיל את החיפוש.
-import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile } from './sources.js';
+import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile, buildYoutubeDetailsUrl, parseYoutubeDurations } from './sources.js';
 import { safeUrl } from './util.js';
 import { isAllowed, mergeResults } from './filter.js';
 
 export const TIMEOUT_MS = 12000;
 
+// זמן קצוב עם Promise.race: באפליקציה fetch עובר דרך CapacitorHttp (native),
+// שעלול להתעלם מ-AbortSignal — בלי זה שרת שלא עונה היה תוקע את כל החיפוש
 async function getJson(url, fetchImpl, timeoutMs = TIMEOUT_MS) {
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => { ctl?.abort(); reject(new Error('timeout')); }, timeoutMs);
+  });
   try {
-    const res = await fetchImpl(url, { signal: ctl?.signal, headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`http-${res.status}`);
-    return await res.json();
+    return await Promise.race([
+      (async () => {
+        const res = await fetchImpl(url, { signal: ctl?.signal, headers: { Accept: 'application/json' } });
+        if (!res.ok) throw new Error(`http-${res.status}`);
+        return res.json();
+      })(),
+      timeout,
+    ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
   }
 }
 
 // cursors: { [sourceId]: cursor } — לעמוד הבא; מקור שסיים (null) מדולג
-export async function searchAll(query, settings, { cursors = null, fetchImpl = fetch } = {}) {
+export async function searchAll(query, settings, { cursors = null, fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
   const active = settings.sources.filter(sourceReady).filter((s) => !cursors || (s.id in cursors && cursors[s.id] !== null));
   const extraBlock = settings.extraBlock || [];
   const results = await Promise.allSettled(active.map(async (s) => {
     const cursor = cursors ? cursors[s.id] : 0;
     const url = buildSearchUrl(s, query, { cursor, langs: settings.contentLangs || [] });
-    const json = await getJson(url, fetchImpl);
+    const json = await getJson(url, fetchImpl, timeoutMs);
     const { items, next } = parseResults(s, json, cursor);
+    if (s.type === 'youtube' && items.length) {
+      // משכים — לסינון לפי אורך ולתצוגה; כשל לא מפיל את התוצאות
+      try {
+        const durs = parseYoutubeDurations(await getJson(buildYoutubeDetailsUrl(s, items.map((v) => v.nativeId)), fetchImpl, timeoutMs));
+        items.forEach((v) => { if (durs[v.nativeId]) v.duration = durs[v.nativeId]; });
+      } catch { /* בלי משך */ }
+    }
     const allowed = items.filter((v) => isAllowed(v, { extraBlock, keywordFilter: needsKeywordFilter(s), strict: settings.strict }));
     return { source: s, items: allowed, next, filtered: items.length - allowed.length };
   }));

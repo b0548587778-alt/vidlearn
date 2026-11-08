@@ -1,6 +1,6 @@
 // מקורות הסרטונים: כל סוג יודע לבנות כתובת חיפוש ולפרק את התשובה
 // לצורה אחידה. טהור — בלי fetch, נבדק ב-tests/sources.test.mjs.
-import { safeUrl, hostOf, normalizeBase, stripHtml, parseDuration } from './util.js';
+import { safeUrl, hostOf, normalizeBase, stripHtml, parseDuration, parseIsoDuration } from './util.js';
 
 export const PAGE_SIZE = 12;
 
@@ -291,6 +291,21 @@ export function parseResults(source, json, cursor = 0) {
     }
   }
   return { items, next };
+}
+
+// יוטיוב לא מחזיר משך בחיפוש — בקשה אחת נוספת לכל עמוד (יחידת מכסה אחת)
+export function buildYoutubeDetailsUrl(source, ids) {
+  const clean = ids.filter((id) => /^[\w-]{6,20}$/.test(id)).slice(0, 50);
+  if (!clean.length) return '';
+  return 'https://www.googleapis.com/youtube/v3/videos?' + qs({ part: 'contentDetails', id: clean.join(','), key: String(source.key || '').trim() });
+}
+
+export function parseYoutubeDurations(json) {
+  const out = {};
+  for (const it of Array.isArray(json?.items) ? json.items : []) {
+    if (it?.id) out[it.id] = parseIsoDuration(it.contentDetails?.duration);
+  }
+  return out;
 }
 
 // כתובת לקבלת קובץ וידאו ישיר (נגן מקומי: מהירות, המשך מהמקום, הערות לפי זמן)

@@ -56,6 +56,14 @@ export function parseDuration(v) {
   return Math.round(n);
 }
 
+// "PT1H2M3S" ← 3723 (משך של יוטיוב)
+export function parseIsoDuration(s) {
+  const m = String(s || '').match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/);
+  if (!m) return 0;
+  const [, d, h, mi, se] = m.map((x) => Number(x) || 0);
+  return Math.round(d * 86400 + h * 3600 + mi * 60 + se);
+}
+
 export function formatDuration(sec) {
   sec = Math.max(0, Math.round(sec || 0));
   if (!sec) return '';

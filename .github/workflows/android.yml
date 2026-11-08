@@ -36,6 +36,20 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      # מפתח חתימה קבוע מ-GitHub Secrets (SIGNING_KEYSTORE_B64) — בלעדיו כל בנייה נחתמת
+      # במפתח אחר, ואנדרואיד מסרב לעדכן את האפליקציה המותקנת (והסרה מוחקת את הנתונים)
+      - name: Use the fixed signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "signing with the fixed key"
+          else
+            echo "::warning::SIGNING_KEYSTORE_B64 is not set — this APK is signed with a one-off key and cannot update an installed copy"
+          fi
+
       - name: Build debug APK
         working-directory: android
         run: |

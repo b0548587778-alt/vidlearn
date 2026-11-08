@@ -167,6 +167,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
   function prefetchNext(course, currentVideoId) {
     if (!settings().dlAutoNext || !course) return null;
     const i = course.lessons.findIndex((l) => l.id === currentVideoId);
+    if (i < 0) return null; // הסרטון כבר לא בקורס
     const next = course.lessons.slice(i + 1).find((l) => !store.state.progress[l.id]?.done && canDownload(l));
     // שיעור שכבר שמור / בתור / נכשל — לא מנסים שוב אוטומטית (רק המשתמש)
     if (!next || store.getDownload(next.id)) return null;

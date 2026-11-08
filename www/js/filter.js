@@ -24,21 +24,23 @@ function haystack(v) {
   return [v.title, v.description, v.author, ...(v.tags || [])].join(' \u0001 ').toLowerCase();
 }
 
-// התאמת מילה שלמה (גם בעברית עם תחיליות ו/ה/ב/ל/כ/מ/ש)
-function hasWord(text, word) {
+// התאמת מילה שלמה (גם בעברית עם תחיליות ו/ה/ב/ל/כ/מ/ש).
+// whole: בעברית גם סוף מילה (עם סיומת רבים) — "קליפ" לא תופס את "קליפורניה"
+function hasWord(text, word, { whole = false } = {}) {
   const w = word.toLowerCase().trim();
   if (!w) return false;
   const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const hebrew = /[֐-׿]/.test(w);
+  const end = whole ? '(ים|ות|י)?([^\\u0590-\\u05FF]|$)' : '';
   const re = hebrew
-    ? new RegExp(`(^|[^\\u0590-\\u05FF])[והבלכמש]{0,2}${esc}`, 'u')
+    ? new RegExp(`(^|[^\\u0590-\\u05FF])[והבלכמש]{0,2}${esc}${end}`, 'u')
     : new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`);
   return re.test(text);
 }
 
 export function blockedBy(v, extraWords = []) {
   const text = haystack(v);
-  return [...BLOCKLIST, ...extraWords].find((w) => hasWord(text, w)) || null;
+  return [...BLOCKLIST, ...extraWords].find((w) => hasWord(text, w, { whole: true })) || null;
 }
 
 export function looksEducational(v) {
@@ -71,10 +73,12 @@ export function mergeResults(lists) {
     for (const list of lists) {
       const v = list[i];
       if (!v) continue;
-      const k2 = v.title.toLowerCase().replace(/\s+/g, ' ').trim() + '|' + Math.round((v.duration || 0) / 10);
-      if (seen.has(v.id) || seen.has(k2)) continue;
+      // אותו סרטון בשני מקורות: אותה כותרת ואותו משך. בלי משך ידוע — רק לפי מזהה
+      // (אחרת "שיעור 1" של כמה ערוצים היה מתאחד לאחד)
+      const k2 = v.duration ? v.title.toLowerCase().replace(/\s+/g, ' ').trim() + '|' + Math.round(v.duration / 10) : null;
+      if (seen.has(v.id) || (k2 && seen.has(k2))) continue;
       seen.add(v.id);
-      seen.add(k2);
+      if (k2) seen.add(k2);
       out.push(v);
     }
   }
