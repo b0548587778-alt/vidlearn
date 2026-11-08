@@ -41,14 +41,18 @@ jobs:
           npx cap sync android
 
       # מפתח חתימה קבוע מ-GitHub Secrets (SIGNING_KEYSTORE_B64) — בלעדיו כל בנייה נחתמת
-      # במפתח אחר, ואנדרואיד מסרב לעדכן את האפליקציה המותקנת (והסרה מוחקת את הנתונים)
+      # במפתח אחר, ואנדרואיד מסרב לעדכן את האפליקציה המותקנת (והסרה מוחקת את הנתונים).
+      # המפתח מועבר ל-Gradle במפורש (android.injected.signing.*): הנחה בתיקיית ברירת המחדל
+      # (~/.android/debug.keystore) לא נקראה, וכל בנייה נחתמה במפתח אקראי אחר
       - name: Use the fixed signing key
         env:
           KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
         run: |
-          mkdir -p ~/.android
           if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/vidlearn.keystore"
+            keytool -list -keystore "$RUNNER_TEMP/vidlearn.keystore" -storepass android -alias androiddebugkey >/dev/null
+            echo "SIGNING_ARGS=-Pandroid.injected.signing.store.file=$RUNNER_TEMP/vidlearn.keystore -Pandroid.injected.signing.store.password=android -Pandroid.injected.signing.key.alias=androiddebugkey -Pandroid.injected.signing.key.password=android" >> "$GITHUB_ENV"
+            echo "KEY_SHA256=$(keytool -list -v -keystore "$RUNNER_TEMP/vidlearn.keystore" -storepass android -alias androiddebugkey | grep -m1 'SHA256:' | awk '{print $2}')" >> "$GITHUB_ENV"
             echo "signing with the fixed key"
           else
             echo "::warning::SIGNING_KEYSTORE_B64 is not set — this APK is signed with a one-off key and cannot update an installed copy"
@@ -62,7 +66,16 @@ jobs:
           # להורדה בלבד; הבנייה עצמה רצה פעם אחת
           sed -i 's/^networkTimeout=.*/networkTimeout=120000/' gradle/wrapper/gradle-wrapper.properties
           for i in 1 2 3; do ./gradlew --version --no-daemon >/dev/null && break; echo "Gradle download failed (attempt $i), retrying"; sleep 10; done
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon $SIGNING_ARGS
+
+      # ה-APK חייב להיות חתום במפתח הקבוע — אחרת הוא לא יתקין עדכון, ועדיף שהבנייה תיכשל
+      - name: Verify signature
+        if: env.KEY_SHA256 != ''
+        run: |
+          APK_SHA256=$(keytool -printcert -jarfile android/app/build/outputs/apk/debug/app-debug.apk | grep -m1 'SHA256:' | awk '{print $2}')
+          echo "key: $KEY_SHA256"
+          echo "apk: $APK_SHA256"
+          [ "$APK_SHA256" = "$KEY_SHA256" ] || { echo "::error::APK is not signed with the fixed key"; exit 1; }
 
       - name: Rename APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk VidLearn.apk
