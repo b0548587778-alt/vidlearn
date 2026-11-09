@@ -181,9 +181,10 @@ export function nativeYtMeta(r) {
 // קודם מהטלפון עצמו (nativeYoutube), ואם לא — השרתים לפי הסדר ← { meta, url, size, ext }.
 // סרטון לא הולם ← שגיאה 'blocked'
 export async function fetchYoutube(id, settings = {}, { fetchImpl = fetch, quality = 'normal', timeoutMs = 15000, nativeYoutube = null } = {}) {
+  let nativeErr = '';
   if (nativeYoutube) {
     let meta = null;
-    try { meta = nativeYtMeta(await nativeYoutube.info(id)); } catch { /* ננסה את השרתים */ }
+    try { meta = nativeYtMeta(await nativeYoutube.info(id)); } catch (e) { nativeErr = String(e?.message || e || 'failed').slice(0, 100); /* ננסה את השרתים */ }
     if (meta) {
       if (!youtubeAllowed(meta, settings)) throw new Error('blocked');
       return { meta, url: nativeYtUrl(id, quality), size: 0, ext: quality === 'audio' ? 'm4a' : 'mp4' };
@@ -202,7 +203,9 @@ export async function fetchYoutube(id, settings = {}, { fetchImpl = fetch, quali
       lastErr = e;
     }
   }
-  throw lastErr.message === 'no-file' ? lastErr : new Error('yt-unavailable');
+  if (lastErr.message === 'no-file') throw lastErr;
+  // השגיאה מהטלפון עצמו — היא זו שמסבירה (השרתים הם רק גיבוי)
+  throw new Error(nativeErr ? `yt-unavailable: ${nativeErr}` : 'yt-unavailable');
 }
 
 // ---------- הורדה מקישור ----------

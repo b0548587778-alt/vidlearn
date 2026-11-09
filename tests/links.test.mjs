@@ -142,3 +142,10 @@ test('יוטיוב מהטלפון (התוסף) קודם לשרתים; מוגבל
   assert.match(r2.url, /^https:\/\/inv\.example\.org\//);
   assert.equal(served, 1);
 });
+
+test('כשהחילוץ בטלפון נכשל וגם השרתים — השגיאה מהטלפון מוצגת', async () => {
+  const { fetchYoutube } = await import('../www/js/search.js');
+  const settings = { ...defaultState().settings, ytInstances: ['https://a.example'] };
+  const nativeYoutube = { info: async () => { throw new Error('NoSuchMethodError: java.util.List.of'); } };
+  await assert.rejects(fetchYoutube(ID, settings, { fetchImpl: async () => { throw new Error('x'); }, nativeYoutube }), /^Error: yt-unavailable: NoSuchMethodError/);
+});

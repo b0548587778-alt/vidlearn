@@ -165,7 +165,10 @@ function dlLabel(id) {
   if (d.status === 'queued') return { text: tr('dlQueued'), state: 'busy' };
   // הסיבה המדויקת (למשל "http-404") — כדי שאפשר יהיה לדעת מה השתבש
   if (d.error === 'blocked') return { text: tr('dlBlocked'), state: 'error' };
-  if (d.error === 'yt-unavailable') return { text: `${tr('dlFailed')} (${tr('dlYtUnavailable')})`, state: 'error' };
+  if (String(d.error || '').startsWith('yt-unavailable')) {
+    const detail = String(d.error).slice('yt-unavailable'.length).replace(/^:\s*/, '');
+    return { text: `${tr('dlFailed')} (${tr('dlYtUnavailable')}${detail ? ` — ${detail.slice(0, 80)}` : ''})`, state: 'error' };
+  }
   const reason = d.error && d.error !== 'limit' && d.error !== 'failed' ? ` (${String(d.error).slice(0, 60)})` : '';
   return { text: d.error === 'limit' ? tr('dlLimit') : tr('dlFailed') + reason, state: 'error' };
 }
@@ -597,8 +600,11 @@ function linkPanel() {
         h('div', { class: 'row', style: 'margin-top:8px' }, downloadButton(v), h('a', { class: 'btn btn-sm', href: watchHash(v) }, tr('linkWatch'))));
     } catch (e) {
       const msg = String(e?.message || '');
-      const key = { 'bad-link': 'linkBad', blocked: 'linkBlocked', 'yt-unavailable': 'linkYtUnavailable' }[msg] || 'linkFailed';
-      fill(out, h('div', { class: `notice small${msg === 'blocked' ? ' warn' : ''}`, style: 'margin-top:10px' }, tr(key)));
+      const yt = msg.startsWith('yt-unavailable');
+      const key = yt ? 'linkYtUnavailable' : { 'bad-link': 'linkBad', blocked: 'linkBlocked' }[msg] || 'linkFailed';
+      const detail = yt ? msg.slice('yt-unavailable'.length).replace(/^:\s*/, '') : key === 'linkFailed' ? msg : '';
+      fill(out, h('div', { class: `notice small${msg === 'blocked' ? ' warn' : ''}`, style: 'margin-top:10px' }, tr(key),
+        detail ? h('div', { class: 'muted small', dir: 'ltr' }, detail.slice(0, 120)) : null));
     } finally {
       busy = false;
     }
