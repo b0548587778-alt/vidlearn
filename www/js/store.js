@@ -25,6 +25,9 @@ export function defaultState() {
       hideThumbs: false, // הסתרת התמונות הממוזערות (תמונות של סרטונים / ספרים / ערכים)
       filterPin: '',     // גיבוב קוד הנעילה של הגדרות הסינון ('' = לא נעול)
       ytInstances: [],   // שרתי Invidious / Piped להורדה מיוטיוב ([] = ברירת המחדל)
+      simpleMode: true,  // מצב פשוט: כפתורים גדולים, מסך בית ברור, הגדרות מתקדמות מקופלות
+      textScale: 1,      // גודל הטקסט: 1 / 1.15 / 1.3
+      welcomed: false,   // מסך הפתיחה הוצג
     },
     courses: [],
     favorites: [],
@@ -84,6 +87,9 @@ export function normalizeState(raw) {
       sleepMin: Number(s.sleepMin) || 0,
       crossLang: s.crossLang === undefined ? true : !!s.crossLang,
       hideThumbs: !!s.hideThumbs,
+      simpleMode: s.simpleMode === undefined ? true : !!s.simpleMode,
+      textScale: [1, 1.15, 1.3].includes(Number(s.textScale)) ? Number(s.textScale) : 1,
+      welcomed: !!s.welcomed,
       filterPin: typeof s.filterPin === 'string' && /^[0-9a-f]{64}$/.test(s.filterPin) ? s.filterPin : '',
       ytInstances: Array.isArray(s.ytInstances) ? s.ytInstances.map(String).filter((x) => /^https:\/\/[^\s/]+$/.test(x)).slice(0, 10) : [],
       updatedAt: Number(s.updatedAt) || 0, // סנכרון: ההגדרות החדשות יותר גוברות

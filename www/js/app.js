@@ -50,7 +50,8 @@ function toast(msg) {
   el.textContent = msg;
   el.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, 2600);
+  // במצב פשוט ההודעה נשארת יותר זמן — שיהיה זמן לקרוא
+  toast.timer = setTimeout(() => { el.hidden = true; }, store.state.settings.simpleMode !== false ? 4500 : 2600);
 }
 
 
@@ -318,13 +319,37 @@ function searchBar(initial = '', type = 'video') {
 }
 
 // ---------- מסכים ----------
+// מסך פתיחה (פעם ראשונה, או מ"איך משתמשים?" בהגדרות): שלושה צעדים במילים פשוטות
+function welcomeCard() {
+  return h('section', { class: 'welcome panel', 'aria-labelledby': 'welcomeTitle' },
+    h('h1', { id: 'welcomeTitle' }, tr('welcomeTitle')),
+    h('p', {}, tr('welcomeIntro')),
+    h('ol', { class: 'steps' }, tr('welcomeSteps').map(([icon, title, text]) =>
+      h('li', {}, h('span', { class: 'step-ic', 'aria-hidden': 'true' }, icon), h('div', {}, h('b', {}, title), h('p', {}, text))))),
+    h('button', { class: 'btn btn-primary btn-big', type: 'button', onclick: () => { store.setSetting('welcomed', true); route(); } }, tr('welcomeGo')));
+}
+
+// מצב פשוט: ארבעה כפתורים גדולים לפעולות העיקריות
+function quickActions(cont) {
+  const tile = (icon, title, hint, onclick) => h('button', { class: 'quick', type: 'button', onclick },
+    h('span', { class: 'ic', 'aria-hidden': 'true' }, icon), h('b', {}, title), h('span', { class: 'muted small' }, hint));
+  return h('div', { class: 'quick-grid' },
+    tile('🔎', tr('quickSearch'), tr('quickSearchHint'), () => document.querySelector('.hero .searchbar input')?.focus()),
+    tile('⬇', tr('quickDownload'), tr('quickDownloadHint'), () => go('#/library?tab=downloads&focus=link')),
+    tile('📥', tr('quickSaved'), tr('quickSavedHint'), () => go('#/library?tab=downloads')),
+    cont.length ? tile('▶', tr('quickContinue'), truncate(cont[0].title, 30), () => go(watchHash(cont[0]))) : null);
+}
+
 function renderHome() {
   const s = store.state;
   const cont = continueWatching(s).map(remember);
   const courses = s.courses.slice(0, 6);
+  const simple = s.settings.simpleMode !== false;
+  if (!s.settings.welcomed) return welcomeCard();
   return [
-    h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')), h('p', { class: 'muted small' }, VERSION),
+    h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')), simple ? null : h('p', { class: 'muted small' }, VERSION),
       typeTabs(homeType, (k) => { homeType = k; route(); }), searchBar('', homeType)),
+    simple ? quickActions(cont) : null,
     cont.length ? [h('h2', {}, tr('continueLearning')), h('div', { class: 'hscroll' }, cont.map((v) => videoCard(v)))] : null,
     courses.length ? [h('h2', {}, tr('myCourses')), h('div', { class: 'hscroll' }, courses.map(courseCard))] : null,
     h('h2', {}, tr('subjects')),
@@ -606,7 +631,7 @@ function renderLibrary(params) {
       tr(k === 'courses' ? 'myCourses' : k))));
   let body;
   if (tab === 'downloads') {
-    body = [linkPanel(params.get('link') || ''), renderDownloads()];
+    body = [linkPanel(params.get('link') || '', { focus: params.get('focus') === 'link' }), renderDownloads()];
   } else if (tab === 'favorites') {
     body = s.favorites.length ? h('div', { class: 'cards' }, s.favorites.map((v) => videoCard(v))) : h('p', { class: 'muted center' }, '—');
   } else if (tab === 'history') {
@@ -625,7 +650,7 @@ function renderLibrary(params) {
 
 // הורדה מקישור: יוטיוב, Vimeo, PeerTube, ארכיון, ויקישיתוף או קובץ ישיר — אחרי סינון
 // initial: קישור שהגיע מ"שיתוף" — נבדק מיד
-function linkPanel(initial = '') {
+function linkPanel(initial = '', { focus = false } = {}) {
   const input = h('input', { class: 'input', id: 'linkIn', type: 'url', dir: 'ltr', inputmode: 'url', placeholder: 'https://www.youtube.com/watch?v=…', 'aria-label': tr('linkTitle'), value: initial });
   const out = h('div', {});
   let busy = false;
@@ -654,6 +679,7 @@ function linkPanel(initial = '') {
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') check(); });
   if (initial) setTimeout(check, 0);
+  else if (focus) setTimeout(() => input.focus(), 0); // מכפתור "הורדת סרטון" — מוכן להדבקה
   return h('div', { class: 'panel', id: 'linkPanel' },
     h('h2', { style: 'margin-top:0' }, '🔗 ' + tr('linkTitle')),
     h('p', { class: 'muted small' }, tr('linkHint')),
@@ -1456,11 +1482,25 @@ function renderSettings(params = new URLSearchParams()) {
   };
 
   const account = googlePanel();
+  // תצוגה: מצב פשוט וגודל טקסט — בראש, כי הם החשובים למי שפחות רגיל לטכנולוגיה
+  const simple = h('input', { type: 'checkbox', class: 'switch', id: 'simpleMode', checked: s.simpleMode !== false });
+  simple.addEventListener('change', () => { store.setSetting('simpleMode', simple.checked); applyPrefs(); route(); });
+  const sizeRow = h('div', { class: 'size-row', role: 'radiogroup', 'aria-label': tr('textSize') },
+    [[1, 'textNormal'], [1.15, 'textLarge'], [1.3, 'textXL']].map(([v, key]) => h('button', {
+      class: 'btn', type: 'button', role: 'radio', 'aria-checked': String((Number(s.textScale) || 1) === v),
+      style: `font-size:${v}rem`,
+      onclick: () => { store.setSetting('textScale', v); applyPrefs(); route(); },
+    }, `א ${tr(key)}`)));
+  const isSimple = s.simpleMode !== false;
+  const advancedOpen = !isSimple || !!focus;
   return [
     h('h1', {}, tr('settings')),
-    h('p', { class: 'muted small' }, `${tr('version')}: ${VERSION}`),
+    h('div', { class: 'panel' },
+      h('div', { class: 'field' }, h('span', {}, tr('textSize')), sizeRow),
+      h('label', { class: 'check', for: 'simpleMode' }, simple, tr('simpleMode')),
+      h('label', { class: 'field', for: 'langSel' }, tr('language'), langSel),
+      h('button', { class: 'btn', type: 'button', onclick: () => { store.setSetting('welcomed', false); go('#/home'); } }, '❓ ' + tr('showHelp'))),
     account,
-    h('div', { class: 'panel' }, h('label', { class: 'field', for: 'langSel' }, tr('language'), langSel)),
     // הסינון והמקורות — נעולים בקוד (fieldset disabled משבית את כל הפקדים שבתוכו)
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('filtering')),
       pinPanel(),
@@ -1471,6 +1511,9 @@ function renderSettings(params = new URLSearchParams()) {
       h('label', { class: 'field', for: 'contentLangs' }, tr('contentLangs'), langsIn),
       h('label', { class: 'check', for: 'crossLang' }, crossLang, tr('crossLang')),
       h('div', { class: 'notice warn small' }, tr('filterNote'))),
+    h('details', { class: 'advanced', open: advancedOpen },
+    h('summary', {}, tr('advancedSettings')),
+    h('p', { class: 'muted small' }, tr('advancedHint')),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('sources')), h('p', { class: 'muted small' }, tr('sourcesHint')),
       h('fieldset', { class: 'lockable', disabled: locked }, sourcesBox,
         h('h2', {}, tr('addSource')),
@@ -1493,6 +1536,7 @@ function renderSettings(params = new URLSearchParams()) {
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('button', { class: 'btn', type: 'button', onclick: doExport }, tr('exportData')),
         h('button', { class: 'btn', type: 'button', onclick: doImport, disabled: locked }, tr('importData')))),
+    h('p', { class: 'muted small' }, `${tr('version')}: ${VERSION}`)),
   ];
 }
 
@@ -1595,7 +1639,11 @@ function applyLang() {
 
 // העדפות תצוגה שאינן שפה: הסתרת תמונות
 function applyPrefs() {
-  document.body.classList.toggle('no-thumbs', !!store.state.settings.hideThumbs);
+  const s = store.state.settings;
+  document.body.classList.toggle('no-thumbs', !!s.hideThumbs);
+  document.body.classList.toggle('simple', s.simpleMode !== false);
+  // גודל הטקסט: כל המידות ב-rem — משנים את הבסיס
+  document.documentElement.style.fontSize = `${16 * (Number(s.textScale) || 1)}px`;
 }
 
 function route() {
