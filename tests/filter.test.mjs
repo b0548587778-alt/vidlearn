@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAllowed, blockedBy, looksEducational, mergeResults, parseWordList } from '../www/js/filter.js';
+import { isAllowed, blockedBy, blockedText, queryBlocked, blockedHost, looksEducational, mergeResults, parseWordList } from '../www/js/filter.js';
 
 const v = (title, extra = {}) => ({ id: title, title, description: '', author: '', tags: [], ...extra });
 
@@ -48,4 +48,25 @@ test('סקירה: מילה אסורה בעברית לא תופסת מילה אר
 test('סקירה: אותה כותרת בלי משך ידוע — לא מתאחדים', () => {
   const out = mergeResults([[v('Lesson 1', { id: 'youtube:a' }), v('Lesson 1', { id: 'youtube:b' })]]);
   assert.equal(out.length, 2);
+});
+
+test('כתיב עוקף: אותיות מסוגננות, ספרות, נקודות, ניקוד ותווים נסתרים', () => {
+  for (const t of ['s.e.x tips', 'p0rn', '𝐬𝐞𝐱𝐲 video', 'ｎｕｄｅ', 'ס.ק.ס', 'סֶקְס', 'por​n', 'f**k this', 'hot 🔞', 'S E X']) {
+    assert.ok(blockedText(t), t);
+  }
+});
+
+test('בלי חסימת שווא: שיעורי תורה ומדע', () => {
+  for (const t of ['History of Essex', 'בורא מיני מזונות', 'פיטום הקטורת — סמים', 'שיעור על הקליפה', 'Romance languages', 'Physics lesson 4x4', 'Mp3 lecture', 'שמירת הלשון ורכילות', 'מסיבה זו', 'ישוב הארץ']) {
+    assert.equal(blockedText(t), null, t);
+  }
+});
+
+test('חיפוש אסור, סימון של המקור ואתר אסור', () => {
+  assert.ok(queryBlocked('p 0 r n'));
+  assert.equal(queryBlocked('שיעור בגמרא'), null);
+  assert.equal(isAllowed(v('Algebra lesson', { nsfw: true })), false);
+  assert.equal(isAllowed(v('Algebra lesson', { familyFriendly: false })), false);
+  assert.equal(blockedHost('https://www.xvideos.com/a.mp4'), true);
+  assert.equal(blockedHost('https://archive.org/download/a/b.mp4'), false);
 });

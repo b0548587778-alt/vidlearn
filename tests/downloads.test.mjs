@@ -31,9 +31,13 @@ const resolveUrl = async (v, q) => `https://archive.org/download/${v.nativeId}/$
 const idle = () => new Promise((r) => setTimeout(r, 0));
 async function settle(dl) { for (let i = 0; i < 20; i++) await idle(); }
 
-test('מה אפשר להוריד: לא יוטיוב', () => {
+test('מה אפשר להוריד: גם יוטיוב (עם מזהה תקין), לא מקור לא מוכר', () => {
   assert.equal(canDownload(arch('a')), true);
   assert.equal(canDownload({ id: 'youtube:x', sourceType: 'youtube', play: { kind: 'iframe', url: 'https://www.youtube-nocookie.com/embed/x' } }), false);
+  assert.equal(canDownload({ id: 'youtube:abcdefghijk', sourceType: 'youtube', nativeId: 'abcdefghijk', play: { kind: 'iframe', url: '' } }), true);
+  assert.equal(canDownload({ id: 'direct:x', sourceType: 'direct', play: { kind: 'video', url: 'https://example.org/a.mp4' } }), true);
+  assert.equal(canDownload({ id: 'x', sourceType: 'other', nativeId: 'abcdefghijk', play: { kind: 'iframe', url: '' } }), false);
+  assert.match(fileNameFor({ id: 'youtube:abcdefghijk', sourceType: 'youtube' }, 'https://inv.example/latest_version?id=abcdefghijk&itag=140', 'm4a'), /^videos\/youtube-[0-9a-f]{16}\.m4a$/);
   assert.equal(canDownload({ sourceType: 'commons', nativeId: '5', play: { kind: 'video', url: 'https://upload.wikimedia.org/a.webm' } }), true);
   assert.match(fileNameFor({ id: 'commons:5', sourceType: 'commons' }, 'https://upload.wikimedia.org/x/a.webm?utm=1'), /^videos\/commons-[0-9a-f]{16}\.webm$/);
 });

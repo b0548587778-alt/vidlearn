@@ -1,10 +1,11 @@
 // חיפוש מקביל בכל המקורות הפעילים. מקור שנכשל לא מפיל את החיפוש.
-import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile, buildYoutubeDetailsUrl, parseYoutubeDurations } from './sources.js';
-import { safeUrl } from './util.js';
+import { buildSearchUrl, parseResults, sourceReady, needsKeywordFilter, buildResolveUrl, resolveFile, buildYoutubeDetailsUrl, parseYoutubeDurations, PEERTUBE_EDUCATION } from './sources.js';
+import { safeUrl, stripHtml, parseDuration, hostOf } from './util.js';
+import { DEFAULT_YT_INSTANCES, parseInstances, parseLink, buildYtInfoUrl, parseYtInfo, vimeoInfoUrl, vimeoConfigUrl, parseVimeoInfo, parseVimeoConfig, commonsTitleUrl, titleFromUrl } from './links.js';
 import { buildAudioSearchUrl, buildBookSearchUrl, buildScannedSearchUrl, parseArchiveItems, metadataUrl, pickBookText } from './media.js';
 import { buildPodcastSearchUrl, parsePodcastResults, parsePodcastFeed } from './podcasts.js';
 import { buildWikiSummaryUrl, parseWikiSummary, buildWikiArticleUrl, parseWikiArticle, wikiLang } from './wiki.js';
-import { isAllowed, mergeResults, blockedBy } from './filter.js';
+import { isAllowed, mergeResults, blockedBy, queryBlocked, blockedHost, flaggedBySource, looksEducational } from './filter.js';
 
 export const TIMEOUT_MS = 12000;
 
@@ -41,6 +42,8 @@ const altEligible = (s) => s.type !== 'youtube';
 // youtubeAuth: ({ refresh }) => טוקן גישה של Google (כשמחוברים) — יוטיוב בלי מפתח API.
 // 401 (טוקן שפג) ← טוקן חדש וניסיון אחד נוסף
 export async function searchAll(query, settings, { cursors = null, alt = null, altOnly = false, fetchImpl = fetch, timeoutMs = TIMEOUT_MS, youtubeAuth = null } = {}) {
+  // מילת חיפוש אסורה — לא שולחים את החיפוש לאף מקור
+  if (queryBlocked(query, settings.extraBlock || [])) return { items: [], cursors: {}, hasMore: false, errors: [], filtered: 0, searched: 0, alt: null, blocked: true };
   const ready = settings.sources.filter((s) => sourceReady(s, { google: !!youtubeAuth }));
   // יוטיוב בלי מפתח ← עם הכניסה ל-Google
   const ytGet = async (s, url) => {
@@ -64,7 +67,7 @@ export async function searchAll(query, settings, { cursors = null, alt = null, a
     let q = query;
     if (t.alt) {
       q = await altQuery;
-      if (!q || q.trim().toLowerCase() === String(query).trim().toLowerCase()) return { items: [], next: null, filtered: 0 };
+      if (!q || queryBlocked(q, extraBlock) || q.trim().toLowerCase() === String(query).trim().toLowerCase()) return { items: [], next: null, filtered: 0 };
     }
     const cursor = cursors && t.id in cursors ? cursors[t.id] : 0;
     const url = buildSearchUrl(s, q, { cursor, langs: settings.contentLangs || [] });
@@ -106,7 +109,17 @@ export async function searchAll(query, settings, { cursors = null, alt = null, a
 }
 
 // הקובץ הישיר לסרטון ← { url, size }; כשל ← { url: '' } (נשארים עם הנגן המוטמע)
-export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'normal' } = {}) {
+// settings: לשרתי יוטיוב ולסינון (קובץ שנפסל ← שגיאה 'blocked')
+export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'normal', settings = {} } = {}) {
+  if (v.sourceType === 'youtube' || v.sourceType === 'invidious') {
+    const r = await fetchYoutube(v.nativeId, settings, { fetchImpl, quality });
+    return { url: r.url, size: r.size, ext: r.ext };
+  }
+  if (v.sourceType === 'vimeo') {
+    try { return parseVimeoConfig(await getJson(vimeoConfigUrl(v.nativeId), fetchImpl, 10000), quality); } catch { return { url: '', size: 0 }; }
+  }
+  if (v.sourceType === 'direct') return { url: safeUrl(v.play?.url), size: 0 };
+  quality = quality === 'audio' ? 'normal' : quality; // שמע בלבד — רק ביוטיוב
   if (v.sourceType === 'audio') return { url: safeUrl(v.play?.url), size: Number(v.size) || 0 };
   if (v.sourceType === 'book') {
     try {
@@ -128,6 +141,117 @@ export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'norma
   return { url: '', size: 0 };
 }
 
+// ---------- יוטיוב דרך Invidious / Piped ----------
+export function ytInstances(settings = {}) {
+  const list = parseInstances(settings.ytInstances || []);
+  return list.length ? list : DEFAULT_YT_INSTANCES;
+}
+
+// סרטון מיוטיוב (שם, תיאור, תגיות, קטגוריה) עובר את אותו סינון; קטגוריות בידור נפסלות
+const YT_BLOCKED_CATEGORIES = ['Gaming', 'Comedy'];
+export function youtubeAllowed(meta, settings = {}) {
+  if (!meta || !meta.title) return false;
+  if (flaggedBySource(meta) || blockedBy(meta, settings.extraBlock || [])) return false;
+  if (YT_BLOCKED_CATEGORIES.includes(meta.category)) return false;
+  if (settings.strict && meta.category !== 'Education' && !looksEducational(meta)) return false;
+  return true;
+}
+
+// מנסה את השרתים לפי הסדר ← { meta, url, size, ext }. סרטון לא הולם ← שגיאה 'blocked'
+export async function fetchYoutube(id, settings = {}, { fetchImpl = fetch, quality = 'normal', timeoutMs = 15000 } = {}) {
+  let lastErr = new Error('yt-unavailable');
+  for (const base of ytInstances(settings)) {
+    try {
+      const r = parseYtInfo(base, await getJson(buildYtInfoUrl(base, id), fetchImpl, timeoutMs), quality);
+      if (!r.meta) throw new Error('bad-answer');
+      if (!youtubeAllowed(r.meta, settings)) throw Object.assign(new Error('blocked'), { final: true });
+      if (r.url) return r;
+      lastErr = Object.assign(new Error('no-file'), { meta: r.meta });
+    } catch (e) {
+      if (e.final) throw e;
+      lastErr = e;
+    }
+  }
+  throw lastErr.message === 'no-file' ? lastErr : new Error('yt-unavailable');
+}
+
+// ---------- הורדה מקישור ----------
+const LINK_SOURCE = { sourceId: 'link' };
+function linkItem(fields) {
+  return { id: '', ...LINK_SOURCE, sourceType: '', sourceName: '', title: '', description: '', author: '', duration: 0, thumb: '', tags: [], lang: '', pageUrl: '', play: { kind: 'iframe', url: '' }, ...fields };
+}
+
+// קישור שהמשתמש הדביק ← פריט מוכן לצפייה / להורדה, אחרי סינון.
+// שגיאות: 'bad-link' (לא מזוהה), 'blocked' (לא הולם), 'yt-unavailable', 'http-…'
+export async function fetchLinkItem(input, settings = {}, { fetchImpl = fetch } = {}) {
+  const link = parseLink(input);
+  if (!link) throw new Error('bad-link');
+  if ((link.url && blockedHost(link.url)) || (link.host && blockedHost(`https://${link.host}`))) throw new Error('blocked');
+  const extraBlock = settings.extraBlock || [];
+  const ok = (item, opts = {}) => {
+    if (!isAllowed(item, { extraBlock, strict: !!settings.strict, ...opts })) throw new Error('blocked');
+    return item;
+  };
+  switch (link.type) {
+    case 'youtube': {
+      const { meta } = await fetchYoutube(link.id, settings, { fetchImpl, quality: 'normal' }).catch((e) => {
+        if (e.message === 'no-file') return { meta: e.meta }; // עבר סינון, רק אין קובץ כרגע — ננסה שוב בהורדה
+        throw e;
+      });
+      return linkItem({
+        id: `youtube:${link.id}`, sourceType: 'youtube', sourceName: 'YouTube', nativeId: link.id,
+        title: meta.title || link.id, description: meta.description || '', author: meta.author || '', duration: meta.duration || 0, tags: meta.tags || [],
+        thumb: `https://i.ytimg.com/vi/${link.id}/mqdefault.jpg`,
+        play: { kind: 'iframe', url: `https://www.youtube-nocookie.com/embed/${link.id}?rel=0&modestbranding=1&playsinline=1` },
+        pageUrl: `https://www.youtube.com/watch?v=${link.id}`,
+      });
+    }
+    case 'vimeo': {
+      const info = parseVimeoInfo(await getJson(vimeoInfoUrl(link.id), fetchImpl, 10000));
+      if (!info) throw new Error('not-found');
+      return ok(linkItem({ ...info, id: `vimeo:${link.id}`, sourceType: 'vimeo', sourceName: 'Vimeo', nativeId: link.id,
+        play: { kind: 'iframe', url: `https://player.vimeo.com/video/${link.id}` }, pageUrl: `https://vimeo.com/${link.id}` }));
+    }
+    case 'peertube': {
+      const json = await getJson(`https://${link.host}/api/v1/videos/${encodeURIComponent(link.id)}`, fetchImpl, 10000);
+      if (!json || json.nsfw) throw new Error('blocked');
+      const src = { id: 'link', type: 'peertube', name: link.host, url: `https://${link.host}` };
+      const item = parseResults(src, { data: [{ ...json, category: null }], total: 1 }).items[0];
+      if (!item) throw new Error('not-found');
+      // לא בקטגוריית חינוך — צריך מילת לימוד, כמו במקור בלי סינון
+      return ok({ ...item, ...LINK_SOURCE }, { keywordFilter: json.category?.id !== PEERTUBE_EDUCATION });
+    }
+    case 'archive': {
+      const json = await getJson(`https://archive.org/metadata/${encodeURIComponent(link.id)}`, fetchImpl, 12000);
+      const m = json?.metadata;
+      if (!m) throw new Error('not-found');
+      const first = (x) => (Array.isArray(x) ? x[0] : x);
+      const id = encodeURIComponent(link.id);
+      return ok(linkItem({
+        id: `archive:${link.id}`, sourceType: 'archive', sourceName: 'Internet Archive', nativeId: link.id,
+        title: String(first(m.title) || link.id), description: stripHtml([].concat(m.description || []).join(' ')), author: String(first(m.creator) || ''),
+        duration: parseDuration(first(m.runtime)), tags: [].concat(m.subject || []).map(String),
+        thumb: `https://archive.org/services/img/${id}`, play: { kind: 'iframe', url: `https://archive.org/embed/${id}` },
+        resolvable: true, pageUrl: `https://archive.org/details/${id}`,
+      }));
+    }
+    case 'commons': {
+      const src = { id: 'link', type: 'commons', name: 'Wikimedia Commons' };
+      const item = parseResults(src, await getJson(commonsTitleUrl(link.title), fetchImpl, 10000)).items[0];
+      if (!item) throw new Error('not-found');
+      return ok({ ...item, ...LINK_SOURCE });
+    }
+    case 'direct': {
+      // קובץ ישיר: אי אפשר לבדוק את התוכן עצמו — רק את שם הקובץ ואת האתר
+      const title = titleFromUrl(link.url) || hostOf(link.url);
+      return ok(linkItem({ id: `direct:${link.url.slice(0, 300)}`, sourceType: 'direct', sourceName: hostOf(link.url), title,
+        play: { kind: 'video', url: link.url }, pageUrl: link.url }));
+    }
+    default:
+      throw new Error('bad-link');
+  }
+}
+
 // לנגן: רק הכתובת. Commons מתנגן ישר מהקובץ שבחיפוש, בלי פנייה נוספת
 export async function resolveDirect(v, opts = {}) {
   if (v.sourceType === 'commons') return v.play?.kind === 'video' ? safeUrl(v.play.url) : '';
@@ -139,6 +263,8 @@ export async function resolveDirect(v, opts = {}) {
 // alt: המונח באנגלית — עוד חיפוש (ספרי השמע וספרי Gutenberg כמעט כולם באנגלית)
 export async function searchMedia(kind, query, settings, { page = 0, alt = '', fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
   const extraBlock = settings.extraBlock || [];
+  if (queryBlocked(query, extraBlock)) return { items: [], next: null, filtered: 0, blocked: true };
+  if (alt && queryBlocked(alt, extraBlock)) alt = '';
   const filterAll = (items) => items.filter((v) => isAllowed(v, { extraBlock, strict: settings.strict }));
   if (kind === 'podcast') {
     const r = parsePodcastResults(await getJson(buildPodcastSearchUrl(query, { page, langs: settings.contentLangs || [] }), fetchImpl, timeoutMs), page);
@@ -168,6 +294,7 @@ const WIKI_HEADERS = { 'Api-User-Agent': 'VidLearn/0.1 (https://github.com/b0548
 // ← ערך לנושא החיפוש, או null (אין / לא הולם / שגיאה — לא מפיל כלום)
 export async function fetchWikiSummary(query, settings, { fetchImpl = fetch, timeoutMs = 8000 } = {}) {
   try {
+    if (queryBlocked(query, settings.extraBlock || [])) return null;
     const lang = wikiLang(query, settings.lang);
     const w = parseWikiSummary(await getJson(buildWikiSummaryUrl(query, lang), fetchImpl, timeoutMs, { headers: WIKI_HEADERS }), lang, query);
     if (!w) return null;

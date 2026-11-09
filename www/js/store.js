@@ -22,6 +22,9 @@ export function defaultState() {
       bookScanned: true, // בחיפוש ספרים — גם ספרים סרוקים (כולל עברית), לא רק Gutenberg
       readerFont: 19,    // גודל הגופן בקורא
       crossLang: true,   // בחיפוש בעברית — גם המונח באנגלית (מוויקיפדיה)
+      hideThumbs: false, // הסתרת התמונות הממוזערות (תמונות של סרטונים / ספרים / ערכים)
+      filterPin: '',     // גיבוב קוד הנעילה של הגדרות הסינון ('' = לא נעול)
+      ytInstances: [],   // שרתי Invidious / Piped להורדה מיוטיוב ([] = ברירת המחדל)
     },
     courses: [],
     favorites: [],
@@ -36,7 +39,7 @@ export function defaultState() {
 
 export const DOWNLOAD_DEFAULTS = {
   dlWifiOnly: true,       // הורדה רק ב-Wi-Fi
-  dlQuality: 'normal',    // normal (עד 720p) / low (חסכוני)
+  dlQuality: 'normal',    // normal (עד 720p) / low (חסכוני) / audio (שמע בלבד — ביוטיוב)
   dlLimitMB: 2000,        // תקרת נפח לכל הסרטונים השמורים
   dlAutoNext: true,       // בקורס — להוריד מראש את השיעור הבא
   dlDeleteLearned: false, // למחוק סרטון שמור כשמסמנים אותו כנלמד
@@ -71,7 +74,7 @@ export function normalizeState(raw) {
       contentLangs: Array.isArray(s.contentLangs) ? s.contentLangs.map(String).filter((x) => /^[a-z]{2,3}$/.test(x)).slice(0, 5) : [],
       sources,
       dlWifiOnly: s.dlWifiOnly === undefined ? DOWNLOAD_DEFAULTS.dlWifiOnly : !!s.dlWifiOnly,
-      dlQuality: s.dlQuality === 'low' ? 'low' : 'normal',
+      dlQuality: ['low', 'audio'].includes(s.dlQuality) ? s.dlQuality : 'normal',
       dlLimitMB: Number.isFinite(Number(s.dlLimitMB)) && Number(s.dlLimitMB) >= 100 ? Math.min(Math.round(Number(s.dlLimitMB)), 200000) : DOWNLOAD_DEFAULTS.dlLimitMB,
       dlAutoNext: s.dlAutoNext === undefined ? DOWNLOAD_DEFAULTS.dlAutoNext : !!s.dlAutoNext,
       dlDeleteLearned: !!s.dlDeleteLearned,
@@ -80,6 +83,9 @@ export function normalizeState(raw) {
       readerFont: Number.isFinite(Number(s.readerFont)) ? Math.min(32, Math.max(14, Number(s.readerFont))) : 19,
       sleepMin: Number(s.sleepMin) || 0,
       crossLang: s.crossLang === undefined ? true : !!s.crossLang,
+      hideThumbs: !!s.hideThumbs,
+      filterPin: typeof s.filterPin === 'string' && /^[0-9a-f]{64}$/.test(s.filterPin) ? s.filterPin : '',
+      ytInstances: Array.isArray(s.ytInstances) ? s.ytInstances.map(String).filter((x) => /^https:\/\/[^\s/]+$/.test(x)).slice(0, 10) : [],
       updatedAt: Number(s.updatedAt) || 0, // סנכרון: ההגדרות החדשות יותר גוברות
     },
     courses: Array.isArray(raw.courses)
@@ -389,7 +395,9 @@ export function createStore(storage, { onSaveError } = {}) {
       if (!parsed || typeof parsed !== 'object' || !parsed.settings) throw new Error('bad-backup');
       const keepDownloads = state.downloads; // הקבצים בטלפון הזה, לא בגיבוי
       const keys = Object.fromEntries(state.settings.sources.filter((x) => x.key).map((x) => [x.id, x.key]));
+      const pin = state.settings.filterPin; // גיבוי ישן בלי נעילה לא מבטל את הנעילה
       state = normalizeState(parsed);
+      if (!state.settings.filterPin && pin) state.settings.filterPin = pin;
       state.downloads = keepDownloads;
       // מפתח שלא בגיבוי — נשאר המפתח שכבר בטלפון
       state.settings.sources.forEach((x) => { if (!x.key && keys[x.id]) x.key = keys[x.id]; });

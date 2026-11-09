@@ -65,3 +65,13 @@ test('יוטיוב עם חשבון Google: בלי מפתח, טוקן בכותר�
   assert.ok(seen.every((x) => !/[?&]key=/.test(x.url)), 'בלי key בכתובת');
   assert.deepEqual(seen.map((x) => x.auth), ['Bearer T0', 'Bearer T1', 'Bearer T1']);
 });
+
+test('מילת חיפוש אסורה — לא נשלחת בקשה לאף מקור', async () => {
+  const settings = defaultState().settings;
+  let calls = 0;
+  const fetchImpl = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+  const r = await searchAll('p0rn', settings, { fetchImpl });
+  assert.equal(r.blocked, true);
+  assert.equal(r.items.length, 0);
+  assert.equal(calls, 0);
+});

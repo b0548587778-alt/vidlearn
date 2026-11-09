@@ -87,3 +87,10 @@ export function truncate(s, n) {
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+
+// גיבוב קוד הנעילה (SHA-256, hex) — הקוד עצמו לא נשמר
+export async function hashPin(pin) {
+  const data = new TextEncoder().encode(`vidlearn-pin:${String(pin || '').trim()}`);
+  const buf = await globalThis.crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}

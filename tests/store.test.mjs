@@ -115,3 +115,15 @@ test('סקירה: רשומות התקדמות מוגבלות, בלי לגעת ב
   assert.ok(s.getProgress('newest'));
   assert.equal(s.getProgress('v0'), null, 'הישן ביותר נמחק');
 });
+
+test('נעילת הסינון: רק גיבוב תקין, וגיבוי בלי נעילה לא מבטל אותה', async () => {
+  const { hashPin } = await import('../www/js/util.js');
+  const h = await hashPin('1234');
+  assert.match(h, /^[0-9a-f]{64}$/);
+  assert.equal(normalizeState({ settings: { filterPin: '1234' } }).settings.filterPin, '');
+  assert.equal(normalizeState({ settings: { dlQuality: 'audio' } }).settings.dlQuality, 'audio');
+  const s = createStore(mem());
+  s.setSetting('filterPin', h);
+  s.importJson(JSON.stringify({ settings: { lang: 'he' } }));
+  assert.equal(s.state.settings.filterPin, h);
+});

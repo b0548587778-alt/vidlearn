@@ -1,13 +1,14 @@
 // ממשק האפליקציה. כל טקסט שמגיע מהרשת נכנס דרך textContent (h()) — אין innerHTML עם נתונים חיצוניים.
 import { createStore, courseProgress, continueWatching } from './store.js';
-import { searchAll, resolveDirect, resolveDirectFile, searchMedia, fetchArchiveMetadata, fetchText, fetchWikiSummary, fetchWikiArticle, fetchPodcastEpisodes } from './search.js';
+import { searchAll, resolveDirect, resolveDirectFile, searchMedia, fetchArchiveMetadata, fetchText, fetchWikiSummary, fetchWikiArticle, fetchPodcastEpisodes, fetchLinkItem } from './search.js';
 import { isHebrewQuery, articleBlocks } from './wiki.js';
 import { itemHash, parseAudioChapters, pickBookText, cleanBookText, paginate, textDir } from './media.js';
 import { SOURCE_TYPES, sourceReady, canDownload } from './sources.js';
 import { createDownloads, formatBytes, publicFileName } from './downloads.js';
-import { parseWordList } from './filter.js';
+import { parseWordList, queryBlocked } from './filter.js';
+import { DEFAULT_YT_INSTANCES, parseInstances } from './links.js';
 import { t as makeT, SUBJECTS } from './i18n.js';
-import { formatDuration, truncate, safeUrl } from './util.js';
+import { formatDuration, truncate, safeUrl, hashPin } from './util.js';
 import { VERSION } from './version.js';
 import { createGoogle, signInErrorKey } from './google.js';
 
@@ -17,6 +18,7 @@ const view = document.getElementById('view');
 const known = new Map(); // id ← סרטון (מתוצאות חיפוש / ספרייה)
 let lastSearch = null;   // נשמר כדי שחזרה מהנגן תחזיר לאותן תוצאות
 let cleanupView = null;
+let filterUnlocked = false; // נעילת הסינון נפתחה בקוד — עד שיוצאים מההגדרות
 
 // ---------- עזרי DOM ----------
 function h(tag, attrs = {}, ...children) {
@@ -134,7 +136,7 @@ const downloads = createDownloads({
   store,
   fs: fsAdapter,
   network: netAdapter,
-  resolveUrl: (v, quality) => resolveDirectFile(v, { quality }),
+  resolveUrl: (v, quality) => resolveDirectFile(v, { quality, settings: store.state.settings }),
   onUpdate: () => {
     if (dlFrame) return;
     dlFrame = requestAnimationFrame(() => { dlFrame = 0; dlWatchers.forEach((fn) => fn()); });
@@ -149,6 +151,8 @@ function dlLabel(id) {
   if (d.status === 'waiting') return { text: tr('dlWaiting'), state: 'busy' };
   if (d.status === 'queued') return { text: tr('dlQueued'), state: 'busy' };
   // הסיבה המדויקת (למשל "http-404") — כדי שאפשר יהיה לדעת מה השתבש
+  if (d.error === 'blocked') return { text: tr('dlBlocked'), state: 'error' };
+  if (d.error === 'yt-unavailable') return { text: `${tr('dlFailed')} (${tr('dlYtUnavailable')})`, state: 'error' };
   const reason = d.error && d.error !== 'limit' && d.error !== 'failed' ? ` (${String(d.error).slice(0, 60)})` : '';
   return { text: d.error === 'limit' ? tr('dlLimit') : tr('dlFailed') + reason, state: 'error' };
 }
@@ -355,6 +359,11 @@ function renderSearch(params) {
   const type = TYPES.some(([k]) => k === params.get('type')) ? params.get('type') : 'video';
   const wrap = h('div', {});
   wrap.append(typeTabs(type, (k) => go(q ? searchHash(q, k) : `#/search${k === 'video' ? '' : `?type=${k}`}`)), searchBar(q, type));
+  // מילת חיפוש אסורה — לא מחפשים בכלל (גם לא ערך בוויקיפדיה)
+  if (q && queryBlocked(q, store.state.settings.extraBlock)) {
+    wrap.append(h('div', { class: 'notice warn' }, '⛔ ' + tr('queryBlocked')));
+    return wrap;
+  }
   // תחום לימוד: הערך לפי שם התחום בשפת הממשק (השאילתה עצמה באנגלית)
   const sub = SUBJECTS.find((x) => x.id === params.get('subject'));
   if (q) wrap.append(wikiCard(sub ? sub[store.state.settings.lang] || sub.he : q));
@@ -539,7 +548,7 @@ function renderLibrary(params) {
       tr(k === 'courses' ? 'myCourses' : k))));
   let body;
   if (tab === 'downloads') {
-    body = renderDownloads();
+    body = [linkPanel(), renderDownloads()];
   } else if (tab === 'favorites') {
     body = s.favorites.length ? h('div', { class: 'cards' }, s.favorites.map((v) => videoCard(v))) : h('p', { class: 'muted center' }, '—');
   } else if (tab === 'history') {
@@ -554,6 +563,39 @@ function renderLibrary(params) {
     ];
   }
   return [h('h1', {}, tr('library')), tabs, body];
+}
+
+// הורדה מקישור: יוטיוב, Vimeo, PeerTube, ארכיון, ויקישיתוף או קובץ ישיר — אחרי סינון
+function linkPanel() {
+  const input = h('input', { class: 'input', id: 'linkIn', type: 'url', dir: 'ltr', inputmode: 'url', placeholder: 'https://www.youtube.com/watch?v=…', 'aria-label': tr('linkTitle') });
+  const out = h('div', {});
+  let busy = false;
+  const check = async () => {
+    const val = input.value.trim();
+    if (!val || busy) return;
+    busy = true;
+    fill(out, h('div', { class: 'spinner' }), h('p', { class: 'muted small center' }, tr('linkChecking')));
+    try {
+      const v = remember(await fetchLinkItem(val, store.state.settings));
+      if (!out.isConnected) return;
+      fill(out,
+        h('div', { class: 'cards', style: 'margin-top:10px' }, videoCard(v)),
+        v.sourceType === 'direct' ? h('p', { class: 'muted small' }, tr('linkDirectNote')) : null,
+        h('div', { class: 'row', style: 'margin-top:8px' }, downloadButton(v), h('a', { class: 'btn btn-sm', href: watchHash(v) }, tr('linkWatch'))));
+    } catch (e) {
+      const msg = String(e?.message || '');
+      const key = { 'bad-link': 'linkBad', blocked: 'linkBlocked', 'yt-unavailable': 'linkYtUnavailable' }[msg] || 'linkFailed';
+      fill(out, h('div', { class: `notice small${msg === 'blocked' ? ' warn' : ''}`, style: 'margin-top:10px' }, tr(key)));
+    } finally {
+      busy = false;
+    }
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') check(); });
+  return h('div', { class: 'panel' },
+    h('h2', { style: 'margin-top:0' }, '🔗 ' + tr('linkTitle')),
+    h('p', { class: 'muted small' }, tr('linkHint')),
+    h('div', { class: 'searchbar' }, input, h('button', { class: 'btn btn-primary', type: 'button', onclick: check }, tr('linkCheck'))),
+    out);
 }
 
 // מסך "שמורים בטלפון": נפח, התקדמות, מחיקה וניסיון חוזר.
@@ -1301,6 +1343,9 @@ function renderSettings(params = new URLSearchParams()) {
     }
   };
 
+  const locked = !!s.filterPin && !filterUnlocked;
+  const hideThumbs = h('input', { type: 'checkbox', class: 'switch', id: 'hideThumbs', checked: !!s.hideThumbs });
+  hideThumbs.addEventListener('change', () => { store.setSetting('hideThumbs', hideThumbs.checked); applyPrefs(); });
   const strict = h('input', { type: 'checkbox', class: 'switch', id: 'strict', checked: s.strict });
   strict.addEventListener('change', () => { store.setSetting('strict', strict.checked); lastSearch = null; lastMedia = null; });
   const extra = h('textarea', { id: 'extraBlock' }, s.extraBlock.join(', '));
@@ -1316,7 +1361,9 @@ function renderSettings(params = new URLSearchParams()) {
   // הגדרות הורדה
   const dlWifi = h('input', { type: 'checkbox', class: 'switch', id: 'dlWifi', checked: s.dlWifiOnly });
   dlWifi.addEventListener('change', () => { store.setSetting('dlWifiOnly', dlWifi.checked); if (!dlWifi.checked) downloads.pump(); });
-  const dlQ = h('select', { class: 'input', id: 'dlQuality' }, h('option', { value: 'normal' }, tr('dlQualityNormal')), h('option', { value: 'low' }, tr('dlQualityLow')));
+  const dlQ = h('select', { class: 'input', id: 'dlQuality' }, h('option', { value: 'normal' }, tr('dlQualityNormal')), h('option', { value: 'low' }, tr('dlQualityLow')), h('option', { value: 'audio' }, tr('dlQualityAudio')));
+  const ytIn = h('textarea', { id: 'ytInstances', dir: 'ltr', placeholder: DEFAULT_YT_INSTANCES.join('\n'), style: 'min-height:90px' }, (s.ytInstances || []).join('\n'));
+  ytIn.addEventListener('change', () => { const list = parseInstances(ytIn.value); store.setSetting('ytInstances', list); ytIn.value = list.join('\n'); });
   dlQ.value = s.dlQuality;
   dlQ.addEventListener('change', () => store.setSetting('dlQuality', dlQ.value));
   const dlLimit = h('input', { class: 'input', id: 'dlLimit', type: 'number', min: 100, step: 100, value: s.dlLimitMB, dir: 'ltr' });
@@ -1341,6 +1388,7 @@ function renderSettings(params = new URLSearchParams()) {
     if (navigator.share) { try { await navigator.share({ title: 'VidLearn backup', text: json }); } catch { /* המשתמש ביטל */ } }
   };
   const doImport = () => {
+    if (store.state.settings.filterPin && !filterUnlocked) { toast(tr('importLocked')); return; }
     try { store.importJson(backupText.value); applyLang(); toast(tr('imported')); route(); } catch { toast(tr('badFile')); }
   };
 
@@ -1350,17 +1398,22 @@ function renderSettings(params = new URLSearchParams()) {
     h('p', { class: 'muted small' }, `${tr('version')}: ${VERSION}`),
     account,
     h('div', { class: 'panel' }, h('label', { class: 'field', for: 'langSel' }, tr('language'), langSel)),
-    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('sources')), h('p', { class: 'muted small' }, tr('sourcesHint')), sourcesBox,
-      h('h2', {}, tr('addSource')),
-      h('label', { class: 'field', for: 'srcType' }, tr('sourceType'), typeSel), urlField,
-      h('label', { class: 'field', for: 'srcName' }, tr('sourceName'), nameIn), keyField,
-      h('button', { class: 'btn btn-primary', type: 'button', onclick: addSource }, '＋ ' + tr('addSource'))),
+    // הסינון והמקורות — נעולים בקוד (fieldset disabled משבית את כל הפקדים שבתוכו)
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('filtering')),
-      h('label', { class: 'check', for: 'strict' }, strict, tr('strict')),
-      h('label', { class: 'field', for: 'extraBlock' }, tr('extraBlock'), extra),
+      pinPanel(),
+      h('fieldset', { class: 'lockable', disabled: locked },
+        h('label', { class: 'check', for: 'strict' }, strict, tr('strict')),
+        h('label', { class: 'check', for: 'hideThumbs' }, hideThumbs, tr('hideThumbs')),
+        h('label', { class: 'field', for: 'extraBlock' }, tr('extraBlock'), extra)),
       h('label', { class: 'field', for: 'contentLangs' }, tr('contentLangs'), langsIn),
       h('label', { class: 'check', for: 'crossLang' }, crossLang, tr('crossLang')),
       h('div', { class: 'notice warn small' }, tr('filterNote'))),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('sources')), h('p', { class: 'muted small' }, tr('sourcesHint')),
+      h('fieldset', { class: 'lockable', disabled: locked }, sourcesBox,
+        h('h2', {}, tr('addSource')),
+        h('label', { class: 'field', for: 'srcType' }, tr('sourceType'), typeSel), urlField,
+        h('label', { class: 'field', for: 'srcName' }, tr('sourceName'), nameIn), keyField,
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: addSource }, '＋ ' + tr('addSource')))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '📚 ' + tr('booksSettings')),
       h('label', { class: 'check', for: 'bookScanned' }, scanned, tr('bookScanned'))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '⬇ ' + tr('dlSettings')),
@@ -1370,12 +1423,51 @@ function renderSettings(params = new URLSearchParams()) {
       h('label', { class: 'field', for: 'dlLimit' }, tr('dlLimitMB'), dlLimit),
       h('label', { class: 'check', for: 'dlNext' }, dlNext, tr('dlAutoNext')),
       h('label', { class: 'check', for: 'dlPub' }, dlPub, tr('dlPublicCopy')),
-      h('label', { class: 'check', for: 'dlDel' }, dlDel, tr('dlDeleteLearned'))),
+      h('label', { class: 'check', for: 'dlDel' }, dlDel, tr('dlDeleteLearned')),
+      h('label', { class: 'field', for: 'ytInstances' }, tr('ytInstances'), ytIn),
+      h('p', { class: 'muted small' }, tr('ytDlNote'))),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('backup')), backupText,
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('button', { class: 'btn', type: 'button', onclick: doExport }, tr('exportData')),
-        h('button', { class: 'btn', type: 'button', onclick: doImport }, tr('importData')))),
+        h('button', { class: 'btn', type: 'button', onclick: doImport, disabled: locked }, tr('importData')))),
   ];
+}
+
+// נעילת הסינון בקוד: רק הגיבוב נשמר. הפתיחה — עד שיוצאים מההגדרות
+function pinPanel() {
+  const pin = store.state.settings.filterPin;
+  const input = h('input', { class: 'input', id: 'pinIn', type: 'password', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 8, autocomplete: 'off', dir: 'ltr', 'aria-label': tr('pinInput'), placeholder: '••••' });
+  const redraw = () => { route(); setTimeout(() => document.getElementById('pinBox')?.scrollIntoView({ block: 'center' }), 0); };
+  const valid = () => /^\d{4,8}$/.test(input.value.trim());
+  const setPin = async () => {
+    if (!valid()) { toast(tr('pinBad')); return; }
+    store.setSetting('filterPin', await hashPin(input.value));
+    filterUnlocked = false;
+    toast(tr('pinIsSet'));
+    redraw();
+  };
+  const unlock = async () => {
+    if ((await hashPin(input.value)) !== store.state.settings.filterPin) { toast(tr('pinWrong')); input.value = ''; return; }
+    filterUnlocked = true;
+    redraw();
+  };
+  const onEnter = (fn) => input.addEventListener('keydown', (e) => { if (e.key === 'Enter') fn(); });
+  let body;
+  if (!pin) {
+    onEnter(setPin);
+    body = [h('p', { class: 'muted small' }, tr('pinHint')),
+      h('div', { class: 'searchbar' }, input, h('button', { class: 'btn', type: 'button', onclick: setPin }, '🔒 ' + tr('pinSet')))];
+  } else if (!filterUnlocked) {
+    onEnter(unlock);
+    body = [h('p', { class: 'small' }, tr('pinLocked')),
+      h('div', { class: 'searchbar' }, input, h('button', { class: 'btn btn-primary', type: 'button', onclick: unlock }, '🔓 ' + tr('pinUnlock')))];
+  } else {
+    body = [h('p', { class: 'muted small' }, '🔓 ' + tr('pinUnlocked')),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { filterUnlocked = false; redraw(); } }, '🔒 ' + tr('pinRelock')),
+        h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: () => { store.setSetting('filterPin', ''); toast(tr('pinRemoved')); redraw(); } }, tr('pinRemove')))];
+  }
+  return h('div', { class: 'pin-box', id: 'pinBox' }, h('b', {}, tr('pinTitle')), body);
 }
 
 // ---------- חלונות ----------
@@ -1438,13 +1530,20 @@ function applyLang() {
   document.getElementById('backBtn').setAttribute('aria-label', tr('back'));
 }
 
+// העדפות תצוגה שאינן שפה: הסתרת תמונות
+function applyPrefs() {
+  document.body.classList.toggle('no-thumbs', !!store.state.settings.hideThumbs);
+}
+
 function route() {
   if (cleanupView) { try { cleanupView(); } catch { /* */ } cleanupView = null; }
+  applyPrefs();
   dlWatchers.clear();
   const raw = location.hash.replace(/^#\/?/, '') || 'home';
   const [path, query = ''] = raw.split('?');
   const params = new URLSearchParams(query);
   const [name, arg] = path.split('/');
+  if (name !== 'settings') filterUnlocked = false; // יציאה מההגדרות נועלת שוב
   const id = arg ? decodeURIComponentSafe(arg) : '';
   let content;
   switch (name) {
