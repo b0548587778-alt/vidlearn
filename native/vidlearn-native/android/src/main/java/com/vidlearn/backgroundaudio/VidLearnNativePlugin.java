@@ -33,9 +33,14 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.schabi.newpipe.extractor.stream.StreamInfo;
+
+import java.io.File;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * VidLearn — יכולות אנדרואיד שאין בתוספים הרגילים.
@@ -224,6 +229,100 @@ public class VidLearnNativePlugin extends Plugin {
         }
         MediaScannerConnection.scanFile(getContext(), new String[] { path }, null, null);
         call.resolve();
+    }
+
+    // ---------- יוטיוב ישירות מהטלפון (YtCore + YtMux) ----------
+    // תהליכונים משלנו: הפעולות ארוכות, ותהליכון התוספים של Capacitor משותף לכל הקריאות
+    private final ExecutorService ytInfoPool = Executors.newFixedThreadPool(2);
+    private final ExecutorService ytDownloadPool = Executors.newSingleThreadExecutor();
+
+    private static String validId(PluginCall call) {
+        String id = call.getString("id", "");
+        return id != null && id.matches("[\\w-]{11}") ? id : null;
+    }
+
+    private static String errorOf(Throwable e) {
+        String m = e.getMessage();
+        return m == null || m.isEmpty() ? e.getClass().getSimpleName() : (m.length() > 120 ? m.substring(0, 120) : m);
+    }
+
+    /** פרטי הסרטון — לסינון לפני ההורדה ולהצגה */
+    @PluginMethod
+    public void youtubeInfo(PluginCall call) {
+        String id = validId(call);
+        if (id == null) { call.reject("bad-id"); return; }
+        ytInfoPool.execute(() -> {
+            try {
+                StreamInfo i = YtCore.info(id);
+                JSObject r = new JSObject();
+                r.put("title", i.getName());
+                r.put("description", i.getDescription() != null ? i.getDescription().getContent() : "");
+                r.put("author", i.getUploaderName());
+                r.put("duration", i.getDuration());
+                r.put("category", i.getCategory());
+                r.put("ageLimit", i.getAgeLimit());
+                r.put("tags", new org.json.JSONArray(i.getTags()));
+                call.resolve(r);
+            } catch (Throwable e) { // גם Error (למשל מחלקה חסרה בגרסת אנדרואיד ישנה) — לא מפיל את האפליקציה
+                call.reject(errorOf(e));
+            }
+        });
+    }
+
+    /** הורדה לקובץ בתיקיית האפליקציה (Directory.DATA): path יחסי, quality = normal / low / audio.
+     *  התקדמות: אירוע "ytProgress" { path, progress 0..1 } */
+    @PluginMethod
+    public void youtubeDownload(PluginCall call) {
+        String id = validId(call);
+        String path = call.getString("path", "");
+        String quality = call.getString("quality", "normal");
+        if (id == null || path == null || path.isEmpty() || path.contains("..") || path.startsWith("/")) { call.reject("bad-args"); return; }
+        ytDownloadPool.execute(() -> {
+            File out = new File(getContext().getFilesDir(), path);
+            File v = null, a = null;
+            try {
+                File dir = out.getParentFile();
+                if (dir != null) dir.mkdirs();
+                YtCore.Pick p = YtCore.pick(YtCore.info(id), quality);
+                if (p.video == null) {
+                    final long total = p.audioLength;
+                    YtCore.download(p.audio.getContent(), p.audioLength, out, progress(path, 0, total, total));
+                } else {
+                    // משקל ההתקדמות לפי הגודל (ידוע מראש ברוב הסרטונים)
+                    long total = p.videoLength + p.audioLength;
+                    v = new File(getContext().getCacheDir(), "yt-" + id + "-v.mp4");
+                    a = new File(getContext().getCacheDir(), "yt-" + id + "-a.m4a");
+                    YtCore.download(p.video.getContent(), p.videoLength, v, progress(path, 0, p.videoLength, total));
+                    YtCore.download(p.audio.getContent(), p.audioLength, a, progress(path, v.length(), p.audioLength, total));
+                    YtMux.mux(v, a, out);
+                }
+                JSObject r = new JSObject();
+                r.put("uri", android.net.Uri.fromFile(out).toString());
+                r.put("size", out.length());
+                call.resolve(r);
+            } catch (Throwable e) { // גם Error (למשל מחלקה חסרה בגרסת אנדרואיד ישנה) — לא מפיל את האפליקציה
+                out.delete();
+                call.reject(errorOf(e));
+            } finally {
+                if (v != null) v.delete();
+                if (a != null) a.delete();
+            }
+        });
+    }
+
+    // התקדמות: עדכון לכל אחוז, לא לכל חבילה
+    private YtCore.Progress progress(String path, long offset, long partLength, long total) {
+        final int[] last = { -1 };
+        return done -> {
+            if (total <= 0) return;
+            int pct = (int) Math.min(100, ((offset + done) * 100) / total);
+            if (pct == last[0]) return;
+            last[0] = pct;
+            JSObject ev = new JSObject();
+            ev.put("path", path);
+            ev.put("progress", pct / 100.0);
+            notifyListeners("ytProgress", ev);
+        };
     }
 
     @PluginMethod
