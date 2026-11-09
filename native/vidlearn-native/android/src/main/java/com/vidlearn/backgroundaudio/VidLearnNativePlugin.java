@@ -256,7 +256,7 @@ public class VidLearnNativePlugin extends Plugin {
                 StreamInfo i = YtCore.info(id);
                 JSObject r = new JSObject();
                 r.put("title", i.getName());
-                r.put("description", i.getDescription() != null ? i.getDescription().getContent() : "");
+                r.put("description", i.getDescription() != null ? i.getDescription().content() : "");
                 r.put("author", i.getUploaderName());
                 r.put("duration", i.getDuration());
                 r.put("category", i.getCategory());
