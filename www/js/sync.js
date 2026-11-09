@@ -8,7 +8,8 @@ const MAX_NOTES = 500;
 const TOMBSTONE_DAYS = 180; // סימון "נמחק" נשמר חצי שנה — מספיק כדי שכל המכשירים יראו אותו
 
 // הגדרות שעוברות בין מכשירים. הגדרות ההורדה (Wi-Fi, נפח, תיקייה) — של כל טלפון לחוד
-const SYNCED_SETTINGS = ['lang', 'strict', 'extraBlock', 'contentLangs', 'crossLang', 'bookScanned', 'readerFont', 'sources', 'updatedAt'];
+// filterPin עובר — נעילת הסינון חלה על כל הטלפונים של החשבון
+const SYNCED_SETTINGS = ['lang', 'strict', 'extraBlock', 'contentLangs', 'crossLang', 'bookScanned', 'readerFont', 'sources', 'hideThumbs', 'filterPin', 'ytInstances', 'updatedAt'];
 
 // החלק של המצב שעובר בסנכרון: בלי הורדות, בלי מטמון פרקים ובלי מפתחות API (סוד)
 export function syncPayload(state) {

@@ -20,9 +20,10 @@ function hashId(str) {
   return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
 }
 
-export function fileNameFor(v, url) {
-  let ext = 'mp4';
-  try {
+// ext: סיומת שהמקור מסר (כתובת בלי סיומת — למשל יוטיוב דרך Invidious)
+export function fileNameFor(v, url, ext0 = '') {
+  let ext = /^(mp4|webm|m4a|mp3)$/.test(ext0) ? ext0 : 'mp4';
+  if (!ext0) try {
     const m = new URL(url).pathname.match(/\.(mp4|webm|ogv|m4v|mp3|m4a|aac|opus|ogg|txt)$/i);
     if (m) ext = m[1].toLowerCase();
   } catch { /* ברירת מחדל mp4 */ }
@@ -121,7 +122,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
             store.setDownload(id, { status: 'error', error: 'limit' });
             continue;
           }
-          path = fileNameFor(next.video, url);
+          path = fileNameFor(next.video, url, typeof r === 'object' && r ? r.ext : '');
           const { uri } = await fs.download(url, path, (p) => { progress.set(id, p); notify(); });
           if (!store.getDownload(id)) { await fs.remove(path).catch(() => {}); continue; } // בוטל באמצע
           const size = await fs.stat(path).catch(() => 0);

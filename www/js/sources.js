@@ -380,9 +380,12 @@ export function parseResolve(v, json, quality = 'normal') {
   return resolveFile(v, json, quality).url;
 }
 
-// אפשר לשמור בטלפון רק סרטון עם קובץ ישיר (לא יוטיוב / Invidious)
+// אפשר לשמור בטלפון סרטון עם קובץ ישיר; יוטיוב — דרך שרת Invidious / Piped (links.js)
 export function canDownload(v) {
   if (!v) return false;
+  if (v.sourceType === 'youtube' || v.sourceType === 'invidious') return /^[\w-]{11}$/.test(String(v.nativeId || ''));
+  if (v.sourceType === 'vimeo') return /^\d{5,12}$/.test(String(v.nativeId || ''));
+  if (v.sourceType === 'direct') return !!safeUrl(v.play?.url);
   if (v.sourceType === 'audio') return v.play?.kind === 'audio' && !!safeUrl(v.play.url); // פרק בספר שמע
   if (v.sourceType === 'book') return !!v.nativeId; // ספר קריאה — קובץ הטקסט
   if (v.sourceType === 'commons') return v.play?.kind === 'video' && !!safeUrl(v.play.url) && /^\d+$/.test(String(v.nativeId || ''));
