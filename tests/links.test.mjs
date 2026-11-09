@@ -149,3 +149,9 @@ test('כשהחילוץ בטלפון נכשל וגם השרתים — השגיא�
   const nativeYoutube = { info: async () => { throw new Error('NoSuchMethodError: java.util.List.of'); } };
   await assert.rejects(fetchYoutube(ID, settings, { fetchImpl: async () => { throw new Error('x'); }, nativeYoutube }), /^Error: yt-unavailable: NoSuchMethodError/);
 });
+
+test('קישור מתוך טקסט ששותף', async () => {
+  const { extractUrl } = await import('../www/js/links.js');
+  assert.equal(extractUrl(`צפו בזה: https://youtu.be/${ID}?si=x.`), `https://youtu.be/${ID}?si=x`);
+  assert.equal(extractUrl('אין כאן קישור'), '');
+});
