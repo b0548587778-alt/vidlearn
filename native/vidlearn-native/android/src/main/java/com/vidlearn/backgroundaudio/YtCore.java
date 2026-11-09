@@ -6,6 +6,8 @@ import org.schabi.newpipe.extractor.ServiceList;
 import org.schabi.newpipe.extractor.downloader.Downloader;
 import org.schabi.newpipe.extractor.downloader.Request;
 import org.schabi.newpipe.extractor.downloader.Response;
+import org.schabi.newpipe.extractor.localization.Localization;
+import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper;
 import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.DeliveryMethod;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
@@ -110,25 +112,29 @@ final class YtCore {
             byte[] buf = new byte[64 * 1024];
             while (total < 0 || pos < total) {
                 int attempt = 0;
-                boolean whole = false;
                 long chunkStart = pos;
                 while (true) {
                     HttpURLConnection c = null;
                     try {
                         long end = pos + CHUNK - 1;
                         if (total > 0) end = Math.min(end, total - 1);
-                        c = (HttpURLConnection) new URL(url).openConnection();
+                        // כמו בנגן של NewPipe: הטווח בכתובת (&range=), והזהות (User-Agent) של הלקוח
+                        // שבשבילו יוטיוב הנפיק את הכתובת — זהות אחרת מקבלת 403
+                        c = (HttpURLConnection) new URL(url + "&range=" + pos + "-" + end).openConnection();
                         c.setConnectTimeout(20000);
                         c.setReadTimeout(30000);
-                        c.setRequestProperty("User-Agent", UA);
-                        c.setRequestProperty("Range", "bytes=" + pos + "-" + end);
+                        boolean web = streamHeaders(c, url);
+                        if (web) { // לקוח web: בקשת POST עם הגוף "x\0"
+                            c.setRequestMethod("POST");
+                            c.setDoOutput(true);
+                            try (OutputStream ps = c.getOutputStream()) { ps.write(new byte[] { 'x', 0 }); }
+                        }
                         int code = c.getResponseCode();
                         if (code == 416) { total = pos; break; }
                         if (code != 206 && code != 200) throw new IOException("http-" + code);
-                        if (code == 200) {
-                            if (pos > 0) throw new IOException("no-range"); // השרת התעלם מ-Range באמצע הקובץ
-                            whole = true;
-                        } else if (total < 0) {
+                        long len = c.getContentLengthLong();
+                        if (pos > 0 && len > end - pos + 1 + 1024) throw new IOException("no-range"); // השרת התעלם מהטווח
+                        if (total < 0) {
                             String cr = c.getHeaderField("Content-Range"); // bytes 0-99/1234
                             int slash = cr == null ? -1 : cr.lastIndexOf('/');
                             if (slash >= 0) try { total = Long.parseLong(cr.substring(slash + 1).trim()); } catch (NumberFormatException ignored) { }
@@ -149,13 +155,27 @@ final class YtCore {
                         if (c != null) c.disconnect();
                     }
                 }
-                if (whole) break;                         // כל הקובץ הגיע בבקשה אחת
                 if (total < 0 && pos - chunkStart < CHUNK) break; // אורך לא ידוע — חלק קצר הוא הסוף
                 if (pos == chunkStart) break;              // לא התקדמנו — לא נסתובב לנצח
             }
         }
         if (pos == 0) throw new IOException("empty");
         return pos;
+    }
+
+    /** כותרות להורדת קובץ מיוטיוב לפי הלקוח שבכתובת ← true ללקוח web (בקשת POST) */
+    static boolean streamHeaders(HttpURLConnection c, String url) {
+        if (YoutubeParsingHelper.isVisionOsStreamingUrl(url)) {
+            c.setRequestProperty("User-Agent", YoutubeParsingHelper.getVisionOsUserAgent(Localization.DEFAULT));
+            return false;
+        }
+        c.setRequestProperty("User-Agent", UA);
+        if (YoutubeParsingHelper.isWebStreamingUrl(url)) {
+            c.setRequestProperty("Origin", "https://www.youtube.com");
+            c.setRequestProperty("Referer", "https://www.youtube.com/");
+            return true;
+        }
+        return false;
     }
 
     /** ה-HTTP של NewPipeExtractor */
@@ -166,10 +186,14 @@ final class YtCore {
             c.setRequestMethod(request.httpMethod());
             c.setConnectTimeout(20000);
             c.setReadTimeout(30000);
-            c.setRequestProperty("User-Agent", UA);
+            // הכותרות של הספרייה קודמות (גם User-Agent של הלקוח שהיא מתחזה אליו) — בלי כפילות
+            boolean hasUa = false;
             for (Map.Entry<String, List<String>> h : request.headers().entrySet()) {
-                for (String v : h.getValue()) c.addRequestProperty(h.getKey(), v);
+                if (h.getKey() == null || h.getValue() == null || h.getValue().isEmpty()) continue;
+                if ("user-agent".equalsIgnoreCase(h.getKey())) hasUa = true;
+                c.setRequestProperty(h.getKey(), String.join(", ", h.getValue()));
             }
+            if (!hasUa) c.setRequestProperty("User-Agent", UA);
             byte[] data = request.dataToSend();
             if (data != null) {
                 c.setDoOutput(true);
