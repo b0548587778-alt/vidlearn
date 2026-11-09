@@ -13,5 +13,15 @@
             android:name=".PlaybackService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- "שיתוף" מיוטיוב / מהדפדפן ← VidLearn: הקישור נפתח במסך ההורדה.
+             מתמזג לתוך המסך הראשי של האפליקציה (Capacitor) לפי השם -->
+        <activity android:name="com.vidlearn.app.MainActivity" android:exported="true">
+            <intent-filter android:label="הורדה ב-VidLearn">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

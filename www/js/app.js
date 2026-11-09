@@ -6,7 +6,8 @@ import { itemHash, parseAudioChapters, pickBookText, cleanBookText, paginate, te
 import { SOURCE_TYPES, sourceReady, canDownload } from './sources.js';
 import { createDownloads, formatBytes, publicFileName } from './downloads.js';
 import { parseWordList, queryBlocked } from './filter.js';
-import { DEFAULT_YT_INSTANCES, parseInstances } from './links.js';
+import { explainError, errorDetail } from './errors.js';
+import { DEFAULT_YT_INSTANCES, parseInstances, extractUrl } from './links.js';
 import { t as makeT, SUBJECTS } from './i18n.js';
 import { formatDuration, truncate, safeUrl, hashPin } from './util.js';
 import { VERSION } from './version.js';
@@ -152,9 +153,23 @@ const downloads = createDownloads({
   resolveUrl: (v, quality) => resolveDirectFile(v, { quality, settings: store.state.settings, nativeYoutube }),
   onUpdate: () => {
     if (dlFrame) return;
-    dlFrame = requestAnimationFrame(() => { dlFrame = 0; dlWatchers.forEach((fn) => fn()); });
+    dlFrame = requestAnimationFrame(() => { dlFrame = 0; drawDlBadge(); dlWatchers.forEach((fn) => fn()); });
   },
+  onDone: (d) => d && toast(tr('dlDoneToast', truncate(d.video.title, 40))),
+  onFail: (d) => d && toast(tr('dlFailToast', truncate(d.video.title, 40))),
 });
+
+// תג בלשונית "הספרייה שלי": כמה הורדות עוד רצות / ממתינות
+function drawDlBadge() {
+  const tab = document.querySelector('#tabbar a[data-tab="library"]');
+  if (!tab) return;
+  const n = downloads.activeCount();
+  let badge = tab.querySelector('.tab-badge');
+  if (!n) { badge?.remove(); return; }
+  if (!badge) { badge = h('i', { class: 'tab-badge', 'aria-hidden': 'true' }); tab.append(badge); }
+  badge.textContent = String(n);
+  tab.setAttribute('aria-label', `${tr('library')} — ${tr('dlActive', n)}`);
+}
 
 function dlLabel(id) {
   const d = store.getDownload(id);
@@ -163,14 +178,35 @@ function dlLabel(id) {
   if (d.status === 'downloading') return { text: tr('dlDownloading', Math.round((downloads.progressOf(id) || 0) * 100)), state: 'busy' };
   if (d.status === 'waiting') return { text: tr('dlWaiting'), state: 'busy' };
   if (d.status === 'queued') return { text: tr('dlQueued'), state: 'busy' };
-  // הסיבה המדויקת (למשל "http-404") — כדי שאפשר יהיה לדעת מה השתבש
-  if (d.error === 'blocked') return { text: tr('dlBlocked'), state: 'error' };
-  if (String(d.error || '').startsWith('yt-unavailable')) {
-    const detail = String(d.error).slice('yt-unavailable'.length).replace(/^:\s*/, '');
-    return { text: `${tr('dlFailed')} (${tr('dlYtUnavailable')}${detail ? ` — ${detail.slice(0, 80)}` : ''})`, state: 'error' };
-  }
-  const reason = d.error && d.error !== 'limit' && d.error !== 'failed' ? ` (${String(d.error).slice(0, 60)})` : '';
-  return { text: d.error === 'limit' ? tr('dlLimit') : tr('dlFailed') + reason, state: 'error' };
+  // הסבר ברור בעברית מה קרה ומה לעשות, והשגיאה הטכנית — מקופלת (לאבחון)
+  const hint = tr(explainError(d.error));
+  const detail = errorDetail(d.error);
+  if (d.error === 'blocked') return { text: tr('dlBlocked'), state: 'error', hint, detail };
+  if (d.error === 'limit') return { text: tr('dlLimit'), state: 'error', hint, detail };
+  return { text: tr('dlFailedRetry'), state: 'error', hint, detail };
+}
+
+// הסבר לשגיאה: משפט ברור, והפרטים הטכניים מקופלים
+function errorHint(l) {
+  if (!l?.hint) return null;
+  return h('div', { class: 'err-hint small' }, l.hint,
+    l.detail ? h('details', {}, h('summary', {}, tr('errDetails')), h('code', { dir: 'ltr' }, l.detail)) : null);
+}
+
+// בחירת מה לשמור: וידאו / חסכוני / שמע בלבד (שמע בלבד — ביוטיוב). הבחירה נזכרת לפעם הבאה
+const isYoutube = (v) => v.sourceType === 'youtube' || v.sourceType === 'invidious';
+function chooseQuality(v, onPick) {
+  const isVideo = !['audio', 'book', 'direct'].includes(v.sourceType) && !v.kind;
+  if (!isVideo) { onPick(null); return; }
+  const opts = [['normal', 'dlOptVideo', 'dlOptVideoHint'], ['low', 'dlOptLow', 'dlOptLowHint'],
+    ...(isYoutube(v) ? [['audio', 'dlOptAudio', 'dlOptAudioHint']] : [])];
+  const current = store.state.settings.dlQuality;
+  openDialog(tr('dlChoose'),
+    h('div', { class: 'choice-list' }, opts.map(([q, label, hint]) => h('button', {
+      class: `choice${q === current ? ' current' : ''}`, type: 'button',
+      onclick: () => { closeDialog(); store.setSetting('dlQuality', q); onPick(q); },
+    }, h('b', {}, tr(label)), h('span', { class: 'muted small' }, tr(hint))))),
+    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: closeDialog }, tr('cancel'))));
 }
 
 // כפתור שמירה שמתעדכן לבד; onDone — למשל להחליף את הנגן לקובץ המקומי
@@ -178,21 +214,27 @@ function downloadButton(v) {
   if (!canDownload(v)) return h('p', { class: 'muted small' }, tr('dlNotSupported'));
   if (!downloads.available) return h('p', { class: 'muted small' }, tr('dlOnlyInApp'));
   const btn = h('button', { class: 'btn btn-sm', type: 'button' });
+  const hintBox = h('div', { class: 'dl-hint' });
+  const wrap = h('span', { class: 'dl-wrap' }, btn, hintBox);
+  let lastHint = '';
   const draw = () => {
     const l = dlLabel(v.id);
     btn.textContent = l.text;
+    btn.classList.toggle('btn-warn', l.state === 'error');
     btn.setAttribute('aria-pressed', String(l.state === 'done'));
+    const key = `${l.hint || ''}|${l.detail || ''}`;
+    if (key !== lastHint) { lastHint = key; fill(hintBox, errorHint(l)); }
   };
   btn.addEventListener('click', () => {
     const l = dlLabel(v.id);
-    if (l.state === 'none') downloads.enqueue(v);
+    if (l.state === 'none') chooseQuality(v, (quality) => { downloads.enqueue(v, { quality }); draw(); });
     else if (l.state === 'error') downloads.retry(v.id);
     else confirmDialog(tr('dlConfirmRemove'), async () => { await downloads.remove(v.id); toast(tr('removed')); });
     draw();
   });
   draw();
   dlWatchers.add(draw);
-  return btn;
+  return wrap;
 }
 
 // סימון נלמד / לא נלמד, כולל מחיקת הסרטון השמור אם הוגדר
@@ -564,7 +606,7 @@ function renderLibrary(params) {
       tr(k === 'courses' ? 'myCourses' : k))));
   let body;
   if (tab === 'downloads') {
-    body = [linkPanel(), renderDownloads()];
+    body = [linkPanel(params.get('link') || ''), renderDownloads()];
   } else if (tab === 'favorites') {
     body = s.favorites.length ? h('div', { class: 'cards' }, s.favorites.map((v) => videoCard(v))) : h('p', { class: 'muted center' }, '—');
   } else if (tab === 'history') {
@@ -582,8 +624,9 @@ function renderLibrary(params) {
 }
 
 // הורדה מקישור: יוטיוב, Vimeo, PeerTube, ארכיון, ויקישיתוף או קובץ ישיר — אחרי סינון
-function linkPanel() {
-  const input = h('input', { class: 'input', id: 'linkIn', type: 'url', dir: 'ltr', inputmode: 'url', placeholder: 'https://www.youtube.com/watch?v=…', 'aria-label': tr('linkTitle') });
+// initial: קישור שהגיע מ"שיתוף" — נבדק מיד
+function linkPanel(initial = '') {
+  const input = h('input', { class: 'input', id: 'linkIn', type: 'url', dir: 'ltr', inputmode: 'url', placeholder: 'https://www.youtube.com/watch?v=…', 'aria-label': tr('linkTitle'), value: initial });
   const out = h('div', {});
   let busy = false;
   const check = async () => {
@@ -600,17 +643,18 @@ function linkPanel() {
         h('div', { class: 'row', style: 'margin-top:8px' }, downloadButton(v), h('a', { class: 'btn btn-sm', href: watchHash(v) }, tr('linkWatch'))));
     } catch (e) {
       const msg = String(e?.message || '');
-      const yt = msg.startsWith('yt-unavailable');
-      const key = yt ? 'linkYtUnavailable' : { 'bad-link': 'linkBad', blocked: 'linkBlocked' }[msg] || 'linkFailed';
-      const detail = yt ? msg.slice('yt-unavailable'.length).replace(/^:\s*/, '') : key === 'linkFailed' ? msg : '';
-      fill(out, h('div', { class: `notice small${msg === 'blocked' ? ' warn' : ''}`, style: 'margin-top:10px' }, tr(key),
-        detail ? h('div', { class: 'muted small', dir: 'ltr' }, detail.slice(0, 120)) : null));
+      const special = { 'bad-link': 'linkBad', blocked: 'linkBlocked' }[msg];
+      const detail = special ? '' : errorDetail(msg);
+      fill(out, h('div', { class: `notice small${msg === 'blocked' ? ' warn' : ''}`, style: 'margin-top:10px' },
+        special ? tr(special) : tr(explainError(msg)),
+        detail ? h('details', {}, h('summary', {}, tr('errDetails')), h('code', { dir: 'ltr' }, detail)) : null));
     } finally {
       busy = false;
     }
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') check(); });
-  return h('div', { class: 'panel' },
+  if (initial) setTimeout(check, 0);
+  return h('div', { class: 'panel', id: 'linkPanel' },
     h('h2', { style: 'margin-top:0' }, '🔗 ' + tr('linkTitle')),
     h('p', { class: 'muted small' }, tr('linkHint')),
     h('div', { class: 'searchbar' }, input, h('button', { class: 'btn btn-primary', type: 'button', onclick: check }, tr('linkCheck'))),
@@ -649,7 +693,7 @@ function renderDownloads() {
         labels.set(v.id, label);
         return h('div', { class: 'lesson' },
           h('span', { class: `num${l.state === 'done' ? ' ok' : l.state === 'error' ? '' : ' cur'}` }, l.state === 'done' ? '✓' : l.state === 'error' ? '!' : '⬇'),
-          h('div', { class: 'info', onclick: () => go(watchHash(v)) }, h('b', {}, v.title), label),
+          h('div', { class: 'info', onclick: () => go(watchHash(v)) }, h('b', {}, v.title), label, l.state === 'error' ? errorHint(l) : null),
           h('div', { class: 'tools' },
             l.state === 'error' ? h('button', { type: 'button', 'aria-label': tr('dlFailed'), title: tr('dlFailed'), onclick: () => downloads.retry(v.id) }, '↻') : null,
             // עותק בתיקיית ההורדות של הטלפון (לקובץ ששמרנו לפני שהאפשרות הייתה, או אחרי שנמחק משם)
@@ -1601,6 +1645,23 @@ if (capApp) {
 applyLang();
 route();
 downloads.pump(); // הורדות שנקטעו בפעם הקודמת ממשיכות
+
+// "שיתוף" מיוטיוב / מהדפדפן ← מסך ההורדה עם הקישור, שנבדק מיד
+let lastShare = { text: '', at: 0 };
+function openShared(text) {
+  const url = extractUrl(text);
+  if (!url) return;
+  if (url === lastShare.text && Date.now() - lastShare.at < 5000) return; // אותו שיתוף הגיע פעמיים
+  lastShare = { text: url, at: Date.now() };
+  toast(tr('shareReceived'));
+  const hash = `#/library?tab=downloads&link=${encodeURIComponent(url)}`;
+  if (location.hash === hash) route(); else go(hash);
+}
+if (NATIVE) {
+  NATIVE.getSharedText?.().then((r) => r?.text && openShared(r.text)).catch(() => {});
+  NATIVE.addListener?.('shareReceived', (e) => e?.text && openShared(e.text));
+}
+drawDlBadge();
 
 // סנכרון עם חשבון Google: בפתיחה, וכשחוזרים לאפליקציה
 if (google.signedIn) google.sync();

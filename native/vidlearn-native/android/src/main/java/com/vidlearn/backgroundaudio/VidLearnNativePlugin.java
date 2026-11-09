@@ -67,6 +67,13 @@ public class VidLearnNativePlugin extends Plugin {
 
     @Override
     public void load() {
+        // יוטיוב: "הוכחה שאינך רובוט" (poToken) מ-WebView נסתר — בלעדיה יוטיוב חוסם לעיתים גישה בלי חשבון
+        try {
+            org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
+                .setPoTokenProvider(new PoTokenWebView.Provider(getContext()));
+        } catch (Throwable ignored) { }
+        // האפליקציה נפתחה מ"שיתוף" (למשל מיוטיוב) — הקישור נשמר עד שהממשק יבקש אותו
+        pendingShare = sharedText(getActivity().getIntent());
         // מסך ההסכמה של Google חוזר לכאן. הרישום חייב להיות בזמן יצירת המסך — load() נקרא אז
         authLauncher = getActivity().registerForActivityResult(new ActivityResultContracts.StartIntentSenderForResult(), result -> {
             PluginCall call = pendingAuth;
@@ -323,6 +330,37 @@ public class VidLearnNativePlugin extends Plugin {
             ev.put("progress", pct / 100.0);
             notifyListeners("ytProgress", ev);
         };
+    }
+
+    // ---------- "שיתוף" מאפליקציה אחרת ----------
+    private String pendingShare;
+
+    private static String sharedText(Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return null;
+        String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+        intent.setAction(null); // לא לטפל שוב באותו שיתוף (למשל אחרי סיבוב המסך)
+        return text == null || text.trim().isEmpty() ? null : text.trim();
+    }
+
+    /** האפליקציה כבר פתוחה וקיבלה שיתוף חדש */
+    @Override
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+        String text = sharedText(intent);
+        if (text == null) return;
+        pendingShare = text;
+        JSObject ev = new JSObject();
+        ev.put("text", text);
+        notifyListeners("shareReceived", ev, true);
+    }
+
+    /** הקישור ששותף לאפליקציה (פעם אחת) ← { text } */
+    @PluginMethod
+    public void getSharedText(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("text", pendingShare);
+        pendingShare = null;
+        call.resolve(r);
     }
 
     @PluginMethod

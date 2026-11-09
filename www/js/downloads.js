@@ -43,7 +43,8 @@ export function publicFileName(v, path, bookTitle = '') {
   return `${clean} [${hashId(String(v.id)).slice(0, 6)}].${ext}`;
 }
 
-export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () => {} }) {
+// onDone(entry) / onFail(entry): הורדה שהסתיימה / נכשלה — להודעה למשתמש (לא חובה)
+export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () => {}, onDone = () => {}, onFail = () => {} }) {
   const progress = new Map(); // id ← 0..1 (בזיכרון בלבד)
   let running = false;
   let rerun = false; // בקשה ל-pump בזמן שהוא רץ — ירוץ שוב בסוף (שינוי רשת באמצע)
@@ -52,6 +53,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
   const settings = () => store.state.settings;
   const all = () => Object.values(store.state.downloads);
   const notify = () => { try { onUpdate(); } catch { /* הממשק לא מפיל את התור */ } };
+  const notifySafe = (fn, id) => { try { fn(store.getDownload(id)); } catch { /* */ } };
 
   const isSaved = (id) => store.getDownload(id)?.status === 'done';
   const limitBytes = () => settings().dlLimitMB * MB;
@@ -60,12 +62,14 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
     return all().filter((d) => d.status === 'done').reduce((sum, d) => sum + (Number(d.size) || 0), 0);
   }
 
-  function enqueue(v, { auto = false } = {}) {
+  // quality: האיכות של ההורדה הזו (normal / low / audio); בלי — מההגדרות
+  function enqueue(v, { auto = false, quality = null } = {}) {
     if (!fs) return 'unavailable';
     if (!canDownload(v)) return 'unsupported';
     const cur = store.getDownload(v.id);
     if (cur && cur.status !== 'error') return 'exists';
-    store.setDownload(v.id, { video: snapshot(v), status: 'queued', auto, at: Date.now(), error: null });
+    const q = ['normal', 'low', 'audio'].includes(quality) ? quality : null;
+    store.setDownload(v.id, { video: snapshot(v), status: 'queued', auto, at: Date.now(), error: null, ...(q ? { wantQuality: q } : {}) });
     notify();
     pump();
     return 'queued';
@@ -112,7 +116,7 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
         notify();
         let path = '';
         try {
-          const quality = settings().dlQuality;
+          const quality = next.wantQuality || settings().dlQuality;
           const r = await resolveUrl(next.video, quality);
           const url = typeof r === 'string' ? r : r?.url;
           const expected = typeof r === 'object' && r ? Number(r.size) || 0 : 0;
@@ -133,13 +137,15 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
             store.setDownload(id, { status: 'done', path, uri, size, quality, at: Date.now() });
             // עותק בתיקיית ההורדות של הטלפון (קובץ רגיל: נראה בקבצים, בנגן המוזיקה ובגלריה). כשל — לא מפיל
             if (settings().dlPublicCopy !== false) await exportToDevice(id).catch(() => {});
+            notifySafe(onDone, id);
           }
         } catch (e) {
           if (path) await fs.remove(path).catch(() => {});
           // החיבור נפל באמצע ← ממתין לרשת (ימשיך לבד), לא שגיאה
           const offline = !(await allowedNow());
           if (store.getDownload(id)) {
-            store.setDownload(id, offline ? { status: 'waiting', error: null } : { status: 'error', error: String(e?.message || 'failed').slice(0, 80) });
+            store.setDownload(id, offline ? { status: 'waiting', error: null } : { status: 'error', error: String(e?.message || 'failed').slice(0, 200) });
+            if (!offline) notifySafe(onFail, id);
           }
         } finally {
           progress.delete(id);
@@ -219,6 +225,8 @@ export function createDownloads({ store, fs, network, resolveUrl, onUpdate = () 
     enqueue, remove, retry, pump, exportToDevice, localSrc, prefetchNext, saveCourse, onLearned, usedBytes, isSaved, limitBytes,
     progressOf: (id) => progress.get(id) ?? null,
     get currentId() { return currentId; },
+    // הורדות שעוד לא הסתיימו (בתור / ממתינות / יורדות) — לתג בלשונית
+    activeCount: () => all().filter((d) => ['queued', 'waiting', 'downloading'].includes(d.status)).length,
     list: () => all().sort((a, b) => b.at - a.at),
   };
 }

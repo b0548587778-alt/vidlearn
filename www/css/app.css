@@ -236,3 +236,17 @@ fieldset.lockable:disabled { opacity: .55; }
 body.no-thumbs .thumb img,
 body.no-thumbs .wiki-head img,
 body.no-thumbs .media-head img { display: none; }
+
+/* הורדות: הסבר לשגיאה, בחירת איכות, תג בלשונית */
+.dl-wrap { display: inline-flex; flex-direction: column; gap: 6px; max-width: 100%; }
+.btn.btn-warn { border-color: var(--accent); }
+.err-hint { background: var(--surface-2); border-inline-start: 4px solid var(--accent); border-radius: 8px; padding: 8px 10px; color: var(--text); line-height: 1.5; }
+.err-hint details { margin-top: 4px; color: var(--muted); }
+.err-hint summary { cursor: pointer; }
+.err-hint code, .notice code { display: block; white-space: pre-wrap; word-break: break-word; font-size: .78rem; margin-top: 4px; text-align: left; }
+.choice-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: start; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.choice b { font-size: 1.05rem; }
+.choice.current { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
+#tabbar a { position: relative; }
+.tab-badge { position: absolute; top: 2px; inset-inline-end: 22%; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: #111; font: 700 .72rem/18px var(--font); font-style: normal; text-align: center; }

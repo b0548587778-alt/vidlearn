@@ -188,3 +188,9 @@ export function titleFromUrl(u) {
     return name.replace(MEDIA_EXT, '').replace(/[_+.]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150);
   } catch { return ''; }
 }
+
+// טקסט ששותף מאפליקציה אחרת ("צפו בזה: https://youtu.be/…") ← הקישור הראשון
+export function extractUrl(text) {
+  const m = String(text || '').match(/https?:\/\/[^\s<>"']+/i);
+  return m ? m[0].replace(/[.,;:!?)\]]+$/, '') : '';
+}
