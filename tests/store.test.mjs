@@ -127,3 +127,12 @@ test('נעילת הסינון: רק גיבוב תקין, וגיבוי בלי נ�
   s.importJson(JSON.stringify({ settings: { lang: 'he' } }));
   assert.equal(s.state.settings.filterPin, h);
 });
+
+test('מצב פשוט כברירת מחדל, וגודל טקסט תקין בלבד', () => {
+  const n = normalizeState({ settings: {} }).settings;
+  assert.equal(n.simpleMode, true);
+  assert.equal(n.textScale, 1);
+  assert.equal(n.welcomed, false);
+  assert.equal(normalizeState({ settings: { textScale: 1.3, simpleMode: false } }).settings.textScale, 1.3);
+  assert.equal(normalizeState({ settings: { textScale: 9 } }).settings.textScale, 1);
+});
