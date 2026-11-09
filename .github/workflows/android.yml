@@ -39,6 +39,9 @@ jobs:
         run: |
           npx cap add android
           npx cap sync android
+          # NewPipeExtractor (יוטיוב מהטלפון, בתוסף vidlearn-native) מתפרסם ב-JitPack —
+          # גם פרויקט האפליקציה צריך את המאגר כדי לפתור את התלויות של התוסף
+          printf '\nallprojects { repositories { maven { url "https://jitpack.io" } } }\n' >> android/build.gradle
 
       # מפתח חתימה קבוע מ-GitHub Secrets (SIGNING_KEYSTORE_B64) — בלעדיו כל בנייה נחתמת
       # במפתח אחר, ואנדרואיד מסרב לעדכן את האפליקציה המותקנת (והסרה מוחקת את הנתונים).

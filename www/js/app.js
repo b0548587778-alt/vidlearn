@@ -71,10 +71,23 @@ const google = createGoogle({
   },
 });
 const ready = (s) => sourceReady(s, { google: google.signedIn });
+// יוטיוב ישירות מהטלפון (NewPipeExtractor בתוסף) — באפליקציה המותקנת בלבד
+const nativeYoutube = NATIVE ? { info: (id) => NATIVE.youtubeInfo({ id }) } : null;
 const ytAuth = () => (google.signedIn ? (o) => google.getToken(o) : null);
 const PUBLIC_DIR = 'Download/VidLearn';
 const fsAdapter = FS ? {
   async download(url, path, onProgress) {
+    // יוטיוב: התוסף מוריד את התמונה והקול ומחבר אותם לקובץ אחד
+    const yt = String(url).match(/^vidlearn-yt:([\w-]{11})\?q=(normal|low|audio)$/);
+    if (yt && NATIVE) {
+      const h = await NATIVE.addListener('ytProgress', (p) => { if (p && p.path === path) onProgress(Number(p.progress) || 0); });
+      try {
+        const r = await NATIVE.youtubeDownload({ id: yt[1], quality: yt[2], path });
+        return { uri: r.uri };
+      } finally {
+        h?.remove?.();
+      }
+    }
     const handle = await FS.addListener('progress', (p) => {
       if (p && p.url === url && p.contentLength > 0) onProgress(p.bytes / p.contentLength);
     });
@@ -136,7 +149,7 @@ const downloads = createDownloads({
   store,
   fs: fsAdapter,
   network: netAdapter,
-  resolveUrl: (v, quality) => resolveDirectFile(v, { quality, settings: store.state.settings }),
+  resolveUrl: (v, quality) => resolveDirectFile(v, { quality, settings: store.state.settings, nativeYoutube }),
   onUpdate: () => {
     if (dlFrame) return;
     dlFrame = requestAnimationFrame(() => { dlFrame = 0; dlWatchers.forEach((fn) => fn()); });
@@ -576,7 +589,7 @@ function linkPanel() {
     busy = true;
     fill(out, h('div', { class: 'spinner' }), h('p', { class: 'muted small center' }, tr('linkChecking')));
     try {
-      const v = remember(await fetchLinkItem(val, store.state.settings));
+      const v = remember(await fetchLinkItem(val, store.state.settings, { nativeYoutube }));
       if (!out.isConnected) return;
       fill(out,
         h('div', { class: 'cards', style: 'margin-top:10px' }, videoCard(v)),

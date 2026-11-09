@@ -110,9 +110,10 @@ export async function searchAll(query, settings, { cursors = null, alt = null, a
 
 // הקובץ הישיר לסרטון ← { url, size }; כשל ← { url: '' } (נשארים עם הנגן המוטמע)
 // settings: לשרתי יוטיוב ולסינון (קובץ שנפסל ← שגיאה 'blocked')
-export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'normal', settings = {} } = {}) {
+// nativeYoutube: { info(id) } — יוטיוב ישירות מהטלפון (התוסף vidlearn-native), לפני השרתים
+export async function resolveDirectFile(v, { fetchImpl = fetch, quality = 'normal', settings = {}, nativeYoutube = null } = {}) {
   if (v.sourceType === 'youtube' || v.sourceType === 'invidious') {
-    const r = await fetchYoutube(v.nativeId, settings, { fetchImpl, quality });
+    const r = await fetchYoutube(v.nativeId, settings, { fetchImpl, quality, nativeYoutube });
     return { url: r.url, size: r.size, ext: r.ext };
   }
   if (v.sourceType === 'vimeo') {
@@ -157,8 +158,37 @@ export function youtubeAllowed(meta, settings = {}) {
   return true;
 }
 
-// מנסה את השרתים לפי הסדר ← { meta, url, size, ext }. סרטון לא הולם ← שגיאה 'blocked'
-export async function fetchYoutube(id, settings = {}, { fetchImpl = fetch, quality = 'normal', timeoutMs = 15000 } = {}) {
+// כתובת פנימית להורדה דרך התוסף: הטלפון עצמו מוריד ומחבר תמונה וקול (fsAdapter ב-app.js)
+export const NATIVE_YT_SCHEME = 'vidlearn-yt:';
+export function nativeYtUrl(id, quality) {
+  return `${NATIVE_YT_SCHEME}${id}?q=${['low', 'audio'].includes(quality) ? quality : 'normal'}`;
+}
+
+// פרטי הסרטון מהתוסף ← אותה צורה כמו מהשרתים
+export function nativeYtMeta(r) {
+  if (!r || !r.title) return null;
+  return {
+    title: String(r.title),
+    description: stripHtml(r.description),
+    author: String(r.author || ''),
+    duration: parseDuration(r.duration),
+    tags: Array.isArray(r.tags) ? r.tags.map(String) : [],
+    category: String(r.category || ''),
+    familyFriendly: Number(r.ageLimit) > 0 ? false : undefined, // מוגבל גיל ← לא מתאים
+  };
+}
+
+// קודם מהטלפון עצמו (nativeYoutube), ואם לא — השרתים לפי הסדר ← { meta, url, size, ext }.
+// סרטון לא הולם ← שגיאה 'blocked'
+export async function fetchYoutube(id, settings = {}, { fetchImpl = fetch, quality = 'normal', timeoutMs = 15000, nativeYoutube = null } = {}) {
+  if (nativeYoutube) {
+    let meta = null;
+    try { meta = nativeYtMeta(await nativeYoutube.info(id)); } catch { /* ננסה את השרתים */ }
+    if (meta) {
+      if (!youtubeAllowed(meta, settings)) throw new Error('blocked');
+      return { meta, url: nativeYtUrl(id, quality), size: 0, ext: quality === 'audio' ? 'm4a' : 'mp4' };
+    }
+  }
   let lastErr = new Error('yt-unavailable');
   for (const base of ytInstances(settings)) {
     try {
@@ -183,7 +213,7 @@ function linkItem(fields) {
 
 // קישור שהמשתמש הדביק ← פריט מוכן לצפייה / להורדה, אחרי סינון.
 // שגיאות: 'bad-link' (לא מזוהה), 'blocked' (לא הולם), 'yt-unavailable', 'http-…'
-export async function fetchLinkItem(input, settings = {}, { fetchImpl = fetch } = {}) {
+export async function fetchLinkItem(input, settings = {}, { fetchImpl = fetch, nativeYoutube = null } = {}) {
   const link = parseLink(input);
   if (!link) throw new Error('bad-link');
   if ((link.url && blockedHost(link.url)) || (link.host && blockedHost(`https://${link.host}`))) throw new Error('blocked');
@@ -194,7 +224,7 @@ export async function fetchLinkItem(input, settings = {}, { fetchImpl = fetch } 
   };
   switch (link.type) {
     case 'youtube': {
-      const { meta } = await fetchYoutube(link.id, settings, { fetchImpl, quality: 'normal' }).catch((e) => {
+      const { meta } = await fetchYoutube(link.id, settings, { fetchImpl, quality: 'normal', nativeYoutube }).catch((e) => {
         if (e.message === 'no-file') return { meta: e.meta }; // עבר סינון, רק אין קובץ כרגע — ננסה שוב בהורדה
         throw e;
       });

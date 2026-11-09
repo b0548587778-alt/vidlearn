@@ -121,3 +121,24 @@ test('קישור: פריט מוכן אחרי סינון', async () => {
   const okPt = await fetchLinkItem('https://tube.example.org/w/u-1234567890', settings, { fetchImpl: pt({ name: 'Chemistry lesson' }) });
   assert.equal(okPt.host, 'tube.example.org');
 });
+
+test('יוטיוב מהטלפון (התוסף) קודם לשרתים; מוגבל גיל נחסם; כשל ← השרתים', async () => {
+  const { fetchYoutube, nativeYtMeta } = await import('../www/js/search.js');
+  const settings = { ...defaultState().settings, ytInstances: ['https://inv.example.org'] };
+  let served = 0;
+  const fetchImpl = async () => { served++; return ok(inv); };
+  const nativeYoutube = { info: async () => ({ title: 'Algebra lesson 1', description: '<p>Intro</p>', author: 'Math', duration: 600, tags: ['math'], category: 'Education', ageLimit: 0 }) };
+  const r = await fetchYoutube(ID, settings, { fetchImpl, nativeYoutube, quality: 'audio' });
+  assert.equal(r.url, `vidlearn-yt:${ID}?q=audio`);
+  assert.equal(r.ext, 'm4a');
+  assert.equal(served, 0, 'לא פונים לשרתים');
+
+  const adult = { info: async () => ({ title: 'Algebra lesson 1', ageLimit: 18 }) };
+  await assert.rejects(fetchYoutube(ID, settings, { fetchImpl, nativeYoutube: adult }), /blocked/);
+  assert.equal(nativeYtMeta({ title: 'x', ageLimit: 18 }).familyFriendly, false);
+
+  const broken = { info: async () => { throw new Error('extract-failed'); } };
+  const r2 = await fetchYoutube(ID, settings, { fetchImpl, nativeYoutube: broken });
+  assert.match(r2.url, /^https:\/\/inv\.example\.org\//);
+  assert.equal(served, 1);
+});
