@@ -2,3 +2,10 @@ node_modules/
 /android/
 *.apk
 signing/*.keystore
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
