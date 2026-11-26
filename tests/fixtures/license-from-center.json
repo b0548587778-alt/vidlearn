@@ -1,0 +1,11 @@
+{
+  "note": "נוצר במרכז הרישוי האמיתי של SuperSuite (owner-core.js) עם מפתח שורש לבדיקות בלבד. now לבדיקה = issuedAt + יום.",
+  "root": "7Qk2rS_ygpjWB5zV5uP6axvyBorpecX6eiiOB3SUVTE",
+  "seed": "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw",
+  "request": "{\"type\":\"supersuite-license-request\",\"v\":1,\"name\":\"תלמוד תורה דרך אמת\",\"publicKey\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"dVxMuSVsp83ErP3Gz-7ahJAX5bn5UU6ZGRvWfgsNQnY\"},\"keyId\":\"ugpgQcl8b66ArbwcCGKXFw\",\"product\":\"vidlearn\"}",
+  "license": "{\"type\":\"supersuite-license\",\"v\":1,\"chain\":[{\"payload\":{\"v\":1,\"id\":\"ugpgQcl8b66ArbwcCGKXFw\",\"parentId\":null,\"depth\":1,\"slot\":1,\"name\":\"תלמוד תורה דרך אמת\",\"publicKey\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"dVxMuSVsp83ErP3Gz-7ahJAX5bn5UU6ZGRvWfgsNQnY\"},\"features\":[\"vidlearn\"],\"limits\":{\"maxChildren\":0,\"maxUsers\":1,\"maxStorageMb\":100,\"maxDepth\":1},\"issuedAt\":1795681925618,\"expiresAt\":1827217925618,\"graceDays\":7},\"sig\":\"3UWJ71S8ljjHrn4jwBIstXwObWQfwZjGCNmKe6wyrxTvEabTL8XXjmgZDod85kRRUO3XtA2BiiuBGCnWEd33Cw\"}],\"notices\":[]}",
+  "otherProduct": "{\"type\":\"supersuite-license\",\"v\":1,\"chain\":[{\"payload\":{\"v\":1,\"id\":\"ugpgQcl8b66ArbwcCGKXFw\",\"parentId\":null,\"depth\":1,\"slot\":1,\"name\":\"תלמוד תורה דרך אמת\",\"publicKey\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"dVxMuSVsp83ErP3Gz-7ahJAX5bn5UU6ZGRvWfgsNQnY\"},\"features\":[\"shir-studio\"],\"limits\":{\"maxChildren\":0,\"maxUsers\":1,\"maxStorageMb\":100,\"maxDepth\":1},\"issuedAt\":1795681925654,\"expiresAt\":1827217925654,\"graceDays\":7},\"sig\":\"frU4ygYVByaRz9b98XypQ_D1GZH4vNlMP5Jp2v_9wMkMplk7NqdVVCO4uWGBLh-4biV0xI0O9C9V3Zb70jxxDQ\"}],\"notices\":[]}",
+  "issuedAt": 1795681925618,
+  "expiresAt": 1827217925618,
+  "graceDays": 7
+}
