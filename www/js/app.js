@@ -17,9 +17,7 @@ import { createLicense, LicenseError } from './license.js';
 const store = createStore(window.localStorage, { onSaveError: () => toast(tr('saveFailed')) });
 let tr = makeT(store.state.settings.lang);
 // רישיון ותקופת ניסיון (license.js) — מפתח נפרד ב-localStorage, לא חלק מהמצב שמסתנכרן או מגובה
-// בתוך SuperSuite לימוד (מודול ב-app://vidlearn) הרישיון של SuperSuite לימוד קובע — הבדיקה כאן כבויה
-const EMBEDDED = location.protocol === 'app:';
-const license = createLicense({ storage: window.localStorage, rootKeys: EMBEDDED ? [] : undefined });
+const license = createLicense({ storage: window.localStorage });
 const view = document.getElementById('view');
 const known = new Map(); // id ← סרטון (מתוצאות חיפוש / ספרייה)
 let lastSearch = null;   // נשמר כדי שחזרה מהנגן תחזיר לאותן תוצאות
