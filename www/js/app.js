@@ -12,9 +12,12 @@ import { t as makeT, SUBJECTS } from './i18n.js';
 import { formatDuration, truncate, safeUrl, hashPin } from './util.js';
 import { VERSION } from './version.js';
 import { createGoogle, signInErrorKey } from './google.js';
+import { createLicense, LicenseError } from './license.js';
 
 const store = createStore(window.localStorage, { onSaveError: () => toast(tr('saveFailed')) });
 let tr = makeT(store.state.settings.lang);
+// רישיון ותקופת ניסיון (license.js) — מפתח נפרד ב-localStorage, לא חלק מהמצב שמסתנכרן או מגובה
+const license = createLicense({ storage: window.localStorage });
 const view = document.getElementById('view');
 const known = new Map(); // id ← סרטון (מתוצאות חיפוש / ספרייה)
 let lastSearch = null;   // נשמר כדי שחזרה מהנגן תחזיר לאותן תוצאות
@@ -349,6 +352,7 @@ function renderHome() {
   return [
     h('section', { class: 'hero' }, h('h1', {}, tr('appName')), h('p', {}, tr('tagline')), simple ? null : h('p', { class: 'muted small' }, VERSION),
       typeTabs(homeType, (k) => { homeType = k; route(); }), searchBar('', homeType)),
+    licenseNotice(),
     simple ? quickActions(cont) : null,
     cont.length ? [h('h2', {}, tr('continueLearning')), h('div', { class: 'hscroll' }, cont.map((v) => videoCard(v)))] : null,
     courses.length ? [h('h2', {}, tr('myCourses')), h('div', { class: 'hscroll' }, courses.map(courseCard))] : null,
@@ -1501,6 +1505,7 @@ function renderSettings(params = new URLSearchParams()) {
       h('label', { class: 'field', for: 'langSel' }, tr('language'), langSel),
       h('button', { class: 'btn', type: 'button', onclick: () => { store.setSetting('welcomed', false); go('#/home'); } }, '❓ ' + tr('showHelp'))),
     account,
+    licensePanel(),
     // הסינון והמקורות — נעולים בקוד (fieldset disabled משבית את כל הפקדים שבתוכו)
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('filtering')),
       pinPanel(),
@@ -1627,6 +1632,93 @@ function addToCourseDialog(v) {
       h('button', { class: 'btn', type: 'button', onclick: closeDialog }, tr('cancel'))));
 }
 
+// ---------- רישיון ותקופת ניסיון (license.js) ----------
+const licDay = (ms) => new Date(ms).toLocaleDateString(store.state.settings.lang === 'en' ? 'en-GB' : 'he-IL');
+function licenseStatusText(st) {
+  switch (st.mode) {
+    case 'licensed': return st.state === 'grace' ? tr('licGrace', licDay(st.graceUntil)) : tr('licActive', st.name, licDay(st.until));
+    case 'expired': return tr('licExpiredMsg', licDay(st.until));
+    case 'trial': return tr('licTrial', st.daysLeft);
+    case 'trial_ended': return tr('licTrialEnded');
+    default: return '';
+  }
+}
+
+// תזכורת במסך הבית: הימים האחרונים של הניסיון, או רישיון שתוקפו הסתיים ועדיין בתקופת החסד
+function licenseNotice() {
+  const st = license.status();
+  const due = (st.mode === 'trial' && st.warn) || (st.mode === 'licensed' && st.state === 'grace');
+  if (!due) return null;
+  return h('div', { class: 'notice warn', role: 'status' }, licenseStatusText(st), ' ',
+    h('button', { class: 'btn btn-sm', type: 'button', onclick: () => go('#/license') }, tr('licOpen')));
+}
+
+function licensePanel() {
+  if (!license.enabled) return null;
+  return h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, '🔑 ' + tr('license')),
+    h('p', { class: 'muted small' }, licenseStatusText(license.status())),
+    h('button', { class: 'btn', type: 'button', onclick: () => go('#/license') }, tr('licOpen')));
+}
+
+// מסך הרישיון: מצב, יצירת בקשה לשליחה לבעל התוכנה, והפעלת הרישיון שהתקבל (הדבקה או קובץ)
+function renderLicense() {
+  const st = license.status();
+  const err = h('div', { class: 'notice warn', role: 'alert', hidden: true });
+  const fail = (e) => { err.textContent = tr(e instanceof LicenseError ? e.code : 'licBadFile'); err.hidden = false; };
+
+  const nameIn = h('input', { class: 'input', id: 'licName', maxlength: 80, autocomplete: 'name' });
+  const reqText = h('textarea', { id: 'licReq', dir: 'ltr', readonly: true, style: 'min-height:110px' });
+  const copyBtn = h('button', { class: 'btn', type: 'button', onclick: async () => {
+    try { await navigator.clipboard.writeText(reqText.value); toast(tr('copied')); } catch { reqText.select(); }
+  } }, tr('copy'));
+  const shareBtn = navigator.share ? h('button', { class: 'btn', type: 'button', onclick: async () => {
+    try { await navigator.share({ title: tr('licRequestTitle'), text: reqText.value }); } catch { /* המשתמש ביטל */ }
+  } }, tr('licShare')) : null;
+  const reqBox = h('div', { hidden: true },
+    h('label', { class: 'field', for: 'licReq' }, tr('licRequestLabel'), reqText),
+    h('div', { class: 'row' }, copyBtn, shareBtn),
+    h('p', { class: 'muted small' }, tr('licRequestHint')));
+  const reqErr = h('div', { class: 'notice warn', role: 'alert', hidden: true });
+  const makeRequest = () => {
+    reqErr.hidden = true;
+    try { reqText.value = license.request(nameIn.value); reqBox.hidden = false; }
+    catch (e) { reqErr.textContent = tr(e instanceof LicenseError ? e.code : 'licSaveFailed'); reqErr.hidden = false; }
+  };
+
+  const codeText = h('textarea', { id: 'licCode', dir: 'ltr', style: 'min-height:110px' });
+  const fileIn = h('input', { type: 'file', id: 'licFile', accept: '.sslic,.json,.txt,application/json,text/plain' });
+  fileIn.addEventListener('change', async () => {
+    const f = fileIn.files?.[0];
+    if (!f) return;
+    err.hidden = true;
+    if (f.size > 200000) { fail(null); return; }
+    try { codeText.value = await f.text(); } catch { fail(null); }
+  });
+  const activate = () => {
+    err.hidden = true;
+    try { license.activate(codeText.value); toast(tr('licActivated')); route(); } catch (e) { fail(e); }
+  };
+
+  return [
+    h('h1', {}, tr('licTitle')),
+    h('div', { class: st.mode === 'licensed' && st.state === 'active' ? 'notice' : 'notice warn', role: 'status' }, licenseStatusText(st)),
+    st.allowed ? null : h('p', { class: 'muted small' }, tr('licLockedNote'), ' ',
+      h('button', { class: 'btn btn-sm', type: 'button', onclick: () => go('#/settings') }, '⚙️ ' + tr('settings'))),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('licHowTitle')),
+      h('ol', {}, tr('licSteps').map((step) => h('li', {}, step))),
+      h('label', { class: 'field', for: 'licName' }, tr('licName'), nameIn),
+      reqErr,
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: makeRequest }, tr('licMakeRequest')),
+      reqBox),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, tr('licHaveCode')),
+      h('label', { class: 'field', for: 'licCode' }, tr('licCodeLabel'), codeText),
+      h('label', { class: 'field', for: 'licFile' }, tr('licPickFile'), fileIn),
+      err,
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: activate }, tr('licActivate'))),
+    h('p', { class: 'muted small' }, tr('licPerDevice')),
+  ];
+}
+
 // ---------- ניווט ----------
 function applyLang() {
   const lang = store.state.settings.lang;
@@ -1653,7 +1745,10 @@ function route() {
   const raw = location.hash.replace(/^#\/?/, '') || 'home';
   const [path, query = ''] = raw.split('?');
   const params = new URLSearchParams(query);
-  const [name, arg] = path.split('/');
+  const [first, arg] = path.split('/');
+  // אחרי תקופת הניסיון ובלי רישיון בתוקף — רק מסך הרישיון וההגדרות (שפה, גיבוי, חשבון) נשארים פתוחים
+  const gated = !license.status().allowed && first !== 'settings';
+  const name = gated ? 'license' : first;
   if (name !== 'settings') filterUnlocked = false; // יציאה מההגדרות נועלת שוב
   const id = arg ? decodeURIComponentSafe(arg) : '';
   let content;
@@ -1665,12 +1760,13 @@ function route() {
     case 'listen': content = renderListen(id, params); break;
     case 'read': content = renderRead(id); break;
     case 'settings': content = renderSettings(params); break;
+    case 'license': content = license.enabled ? renderLicense() : renderHome(); break;
     default: content = renderHome();
   }
   fill(view, ...[content].flat(Infinity).filter(Boolean));
   const tab = name === 'watch' || name === 'course' ? (name === 'course' ? 'library' : '') : (name || 'home');
   document.querySelectorAll('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
-  document.getElementById('backBtn').hidden = ['home', 'search', 'library', 'settings', ''].includes(name) && !(name === 'search' && params.get('subject'));
+  document.getElementById('backBtn').hidden = gated || ['home', 'search', 'library', 'settings', ''].includes(name) && !(name === 'search' && params.get('subject'));
   window.scrollTo(0, 0);
 }
 
@@ -1692,7 +1788,7 @@ if (capApp) {
 
 applyLang();
 route();
-downloads.pump(); // הורדות שנקטעו בפעם הקודמת ממשיכות
+if (license.status().allowed) downloads.pump(); // הורדות שנקטעו בפעם הקודמת ממשיכות (לא אחרי סוף הניסיון בלי רישיון)
 
 // "שיתוף" מיוטיוב / מהדפדפן ← מסך ההורדה עם הקישור, שנבדק מיד
 let lastShare = { text: '', at: 0 };
